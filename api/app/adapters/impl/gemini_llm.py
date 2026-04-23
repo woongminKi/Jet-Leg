@@ -23,7 +23,7 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gemini-2.0-flash"
+_DEFAULT_MODEL = "gemini-2.5-flash"
 _MAX_ATTEMPTS = 3
 _BASE_BACKOFF_SECONDS = 1.0
 
