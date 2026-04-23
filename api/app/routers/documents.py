@@ -221,7 +221,7 @@ async def upload_document(
     # ---- Tier 1 dedup ----
     existing = (
         supabase.table("documents")
-        .select("id")
+        .select("id, flags")
         .eq("user_id", settings.default_user_id)
         .eq("sha256", sha256)
         .is_("deleted_at", "null")
@@ -229,8 +229,24 @@ async def upload_document(
         .execute()
     )
     if existing.data:
+        existing_doc = existing.data[0]
+        existing_doc_id = existing_doc["id"]
+        existing_flags = existing_doc.get("flags") or {}
+
+        # 이전 인제스트가 실패해 chunks/doc_embedding 이 비어있는 케이스는
+        # 사용자 입장에서 재업로드 = 재시도 의도. POST /reingest 와 동일하게 처리.
+        if existing_flags.get("failed"):
+            _reset_doc_for_reingest(supabase, existing_doc_id)
+            job = create_job(doc_id=existing_doc_id)
+            background_tasks.add_task(run_pipeline, job.id, existing_doc_id)
+            return UploadResponse(
+                doc_id=existing_doc_id,
+                job_id=job.id,
+                duplicated=False,
+            )
+
         return UploadResponse(
-            doc_id=existing.data[0]["id"],
+            doc_id=existing_doc_id,
             job_id=None,
             duplicated=True,
         )
@@ -311,7 +327,26 @@ def reingest_document(
             detail=f"진행 중인 작업이 있습니다 (job={latest.id}, status={latest.status}). 완료 후 다시 시도하세요.",
         )
 
-    # chunks reset (count 측정용 → 삭제)
+    chunks_deleted = _reset_doc_for_reingest(supabase, doc_id)
+
+    job = create_job(doc_id=doc_id)
+    background_tasks.add_task(run_pipeline, job.id, doc_id)
+
+    return ReingestResponse(
+        doc_id=doc_id, job_id=job.id, chunks_deleted=chunks_deleted
+    )
+
+
+# ============================================================
+# 내부 헬퍼
+# ============================================================
+def _reset_doc_for_reingest(supabase, doc_id: str) -> int:
+    """chunks 전체 삭제 + documents 의 재계산 대상 필드 reset.
+
+    POST /documents 의 failed 자동 reingest 분기와 POST /documents/{id}/reingest
+    가 공통으로 사용한다. 새 ingest_jobs row 생성과 BackgroundTasks 큐잉은
+    호출자가 책임진다 (응답 형태가 다르기 때문).
+    """
     chunks_count_resp = (
         supabase.table("chunks")
         .select("id", count="exact")
@@ -322,7 +357,6 @@ def reingest_document(
     if chunks_deleted > 0:
         supabase.table("chunks").delete().eq("doc_id", doc_id).execute()
 
-    # documents 메타 reset (재계산 대상 필드들)
     supabase.table("documents").update(
         {
             "tags": [],
@@ -332,12 +366,7 @@ def reingest_document(
         }
     ).eq("id", doc_id).execute()
 
-    job = create_job(doc_id=doc_id)
-    background_tasks.add_task(run_pipeline, job.id, doc_id)
-
-    return ReingestResponse(
-        doc_id=doc_id, job_id=job.id, chunks_deleted=chunks_deleted
-    )
+    return chunks_deleted
 
 
 # ============================================================
