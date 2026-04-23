@@ -12,6 +12,7 @@ import logging
 
 from .jobs import fail_job, finish_job, start_job
 from .stages.chunk import run_chunk_stage
+from .stages.dedup import run_dedup_stage
 from .stages.doc_embed import run_doc_embed_stage
 from .stages.embed import run_embed_stage
 from .stages.extract import run_extract_stage
@@ -43,16 +44,17 @@ def run_pipeline(job_id: str, doc_id: str) -> None:
         doc_embedded = run_doc_embed_stage(
             job_id, doc_id=doc_id, extraction=extraction
         )
-
-        # TODO(Day 5 B6): Tier 2/3 dedup (doc_embedding 이용)
+        dedup_match = run_dedup_stage(job_id, doc_id=doc_id) if doc_embedded else None
 
         logger.info(
-            "ingest pipeline done: job=%s doc=%s chunks_loaded=%s embedded=%s doc_embedded=%s warnings=%s",
+            "ingest pipeline done: job=%s doc=%s chunks_loaded=%s embedded=%s "
+            "doc_embedded=%s dedup_tier=%s warnings=%s",
             job_id,
             doc_id,
             loaded,
             embedded,
             doc_embedded,
+            (dedup_match.get("duplicate_tier") if dedup_match else None),
             len(extraction.warnings),
         )
 
