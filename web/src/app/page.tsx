@@ -1,7 +1,17 @@
-export default function HomePage() {
+import { getStats, listDocuments } from '@/lib/api';
+import { HeroSection } from '@/components/jet-rag/hero-section';
+import { HomeGrid } from '@/components/jet-rag/home-grid';
+
+export default async function HomePage() {
+  const [stats, documents] = await Promise.all([
+    getStats(),
+    listDocuments(5),
+  ]);
+
   return (
-    <main className="container mx-auto px-4 py-10 md:px-6">
-      <h1 className="text-2xl font-semibold">홈 (Day 6 구현 예정)</h1>
+    <main className="flex-1">
+      <HeroSection />
+      <HomeGrid stats={stats} recentDocuments={documents.items} />
     </main>
   );
 }
