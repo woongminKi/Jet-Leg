@@ -152,7 +152,7 @@ async def upload_document(
 
     # ---- ingest_jobs insert + BackgroundTasks ----
     job = create_job(doc_id=doc_id)
-    background_tasks.add_task(run_pipeline, job.id)
+    background_tasks.add_task(run_pipeline, job.id, doc_id)
 
     return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
 
