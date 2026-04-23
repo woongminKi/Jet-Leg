@@ -1,14 +1,16 @@
 """Embed 스테이지 — 기획서 §10.2 [9].
 
 load 스테이지가 chunks 를 `dense_vec=NULL` 상태로 저장한 이후,
-BGE-M3 HF 어댑터로 각 청크 텍스트를 임베딩해 같은 row 를 UPDATE 로 채운다.
+BGE-M3 HF 어댑터로 각 청크 텍스트를 임베딩해 **id 기준 단건 UPDATE** 로 채운다.
 
-배치 단위 전송 → HF API 호출 수 최소화. Supabase upsert(on_conflict=id) 로 UPDATE.
+HF 호출은 배치 (BATCH_SIZE=16) 로 묶어 API 호출 수를 최소화하지만,
+DB 적재는 row 별 update — supabase upsert 가 보내지 않은 컬럼을 NULL 로 처리하는
+케이스에서 chunks.doc_id NOT NULL 위반이 관찰되어 명확한 update 로 통일.
 
 실패 정책 (§10.10)
 - 3회 retry 는 어댑터 내부에서 처리. 최종 실패 시 예외 전파 → pipeline.fail_job.
-  chunks 는 dense_vec NULL 상태로 남고, keyword 검색은 동작. 재처리는 W2 에 추가할
-  `POST /documents/{id}/reingest` 엔드포인트 예정.
+  chunks 는 dense_vec NULL 상태로 남고 keyword 검색은 동작.
+  `POST /documents/{id}/reingest` 로 재처리 가능.
 """
 
 from __future__ import annotations
@@ -49,11 +51,13 @@ def run_embed_stage(job_id: str, *, doc_id: str) -> int:
             texts = [row["text"] for row in batch]
             embeddings = provider.embed_batch(texts)
 
-            payload = [
-                {"id": row["id"], "dense_vec": emb.dense}
-                for row, emb in zip(batch, embeddings)
-            ]
-            client.table("chunks").upsert(payload, on_conflict="id").execute()
+            for row, emb in zip(batch, embeddings):
+                (
+                    client.table("chunks")
+                    .update({"dense_vec": emb.dense})
+                    .eq("id", row["id"])
+                    .execute()
+                )
             total += len(batch)
             logger.info(
                 "embed: doc=%s 진행 %d/%d", doc_id, total, len(rows)
