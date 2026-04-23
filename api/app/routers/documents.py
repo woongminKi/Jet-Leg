@@ -103,22 +103,24 @@ class DocumentListResponse(BaseModel):
 def list_documents(
     limit: int = Query(20, ge=1, le=100, description="한 페이지 최대 반환 건수"),
     offset: int = Query(0, ge=0, description="건너뛸 건수 (페이지네이션)"),
+    include_failed: bool = Query(
+        False,
+        alias="include_failed",
+        description="True 면 flags.failed 인 문서도 포함 (디버깅 용)",
+    ),
 ) -> DocumentListResponse:
     """최신순 문서 리스트. 각 항목에 chunks 개수 + 최신 ingest_jobs 상태 포함.
 
     브라우저 `/docs` (Swagger UI) 에서 Try it out 으로 즉시 확인 가능한 검증 UX.
+
+    failed 정책 (B 안 Hybrid)
+    - 기본은 `flags.failed` 가 True 인 문서 제외 — 사용자에게는 "정상 인제스트된 것만" 보임
+    - PostgREST 의 jsonb 연산자는 `flags->>failed = 'true'` 매칭 외에 NULL 인 row 도
+      함께 통과시키는 OR 조합이 까다로워, MVP 규모에선 Python 측에서 단순 필터링
+    - `include_failed=true` 로 호출하면 디버깅용으로 전체 노출
     """
     supabase = get_supabase_client()
     settings = get_settings()
-
-    total_resp = (
-        supabase.table("documents")
-        .select("id", count="exact")
-        .eq("user_id", settings.default_user_id)
-        .is_("deleted_at", "null")
-        .execute()
-    )
-    total = total_resp.count or 0
 
     docs_resp = (
         supabase.table("documents")
@@ -129,12 +131,22 @@ def list_documents(
         .eq("user_id", settings.default_user_id)
         .is_("deleted_at", "null")
         .order("created_at", desc=True)
-        .range(offset, offset + limit - 1)
         .execute()
     )
+    all_docs = docs_resp.data or []
+
+    if include_failed:
+        filtered_docs = all_docs
+    else:
+        filtered_docs = [
+            d for d in all_docs if not (d.get("flags") or {}).get("failed")
+        ]
+
+    total = len(filtered_docs)
+    page_docs = filtered_docs[offset : offset + limit]
 
     items: list[DocumentListItem] = []
-    for doc in docs_resp.data or []:
+    for doc in page_docs:
         doc_id = doc["id"]
 
         chunks_resp = (

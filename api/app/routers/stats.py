@@ -29,6 +29,7 @@ class DocumentsStats(BaseModel):
     total_size_bytes: int
     added_this_month: int  # KST 이번 달 1일 00:00 이후 추가된 문서 수
     added_last_7d: int  # KST 기준 최근 7일(=168시간) 내 추가된 문서 수
+    failed_count: int  # 인제스트 실패로 chunks 가 비어있는 문서 수 (집계 자체에서는 제외)
 
 
 class JobsStats(BaseModel):
@@ -56,7 +57,7 @@ def stats() -> StatsResponse:
     user_id = get_settings().default_user_id
 
     # ---- documents ----
-    docs = (
+    all_docs = (
         supabase.table("documents")
         .select("doc_type, source_channel, size_bytes, flags, tags, created_at")
         .eq("user_id", user_id)
@@ -65,6 +66,11 @@ def stats() -> StatsResponse:
         .data
         or []
     )
+
+    # 인제스트 실패 문서는 모든 집계에서 제외 — failed_count 만 별도로 노출
+    failed_docs = [d for d in all_docs if (d.get("flags") or {}).get("failed")]
+    docs = [d for d in all_docs if not (d.get("flags") or {}).get("failed")]
+    failed_count = len(failed_docs)
 
     now_kst = datetime.now(KST)
     month_start = now_kst.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -132,6 +138,7 @@ def stats() -> StatsResponse:
             total_size_bytes=total_size,
             added_this_month=added_this_month,
             added_last_7d=added_last_7d,
+            failed_count=failed_count,
         ),
         chunks_total=chunks_total,
         jobs=JobsStats(
