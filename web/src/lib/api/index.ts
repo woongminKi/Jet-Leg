@@ -1,7 +1,8 @@
-import { apiGet, apiPostFormData } from './client';
+import { apiGet, apiPost, apiPostFormData } from './client';
 import type {
   DocumentListResponse,
   DocumentStatusResponse,
+  ReingestResponse,
   SearchResponse,
   SourceChannel,
   Stats,
@@ -35,3 +36,6 @@ export const getDocumentStatus = (docId: string, includeLogs = false) =>
   apiGet<DocumentStatusResponse>(
     `/documents/${docId}/status${includeLogs ? '?include_logs=true' : ''}`,
   );
+
+export const reingestDocument = (docId: string) =>
+  apiPost<ReingestResponse>(`/documents/${docId}/reingest`);

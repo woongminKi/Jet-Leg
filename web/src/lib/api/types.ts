@@ -117,6 +117,12 @@ export interface UploadResponse {
   duplicated: boolean;
 }
 
+export interface ReingestResponse {
+  doc_id: string;
+  job_id: string;
+  chunks_deleted: number;
+}
+
 export interface JobStatus {
   job_id: string;
   status: JobStatusValue;
