@@ -67,6 +67,12 @@ class DocumentStatusResponse(BaseModel):
     logs: list[dict] | None = None
 
 
+class ReingestResponse(BaseModel):
+    doc_id: str
+    job_id: str
+    chunks_deleted: int
+
+
 class DocumentListItem(BaseModel):
     id: str
     title: str
@@ -258,6 +264,80 @@ async def upload_document(
     background_tasks.add_task(run_pipeline, job.id, doc_id)
 
     return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
+
+
+# ============================================================
+# POST /documents/{doc_id}/reingest
+# ============================================================
+@router.post(
+    "/{doc_id}/reingest",
+    response_model=ReingestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def reingest_document(
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+) -> ReingestResponse:
+    """기존 doc 의 chunks/메타를 reset 하고 같은 storage_path 로 파이프라인 재실행.
+
+    용례: Day 4 데이터처럼 dense_vec / doc_embedding 이 NULL 인 기존 문서를
+    Day 5 임베딩 스테이지를 포함한 현재 파이프라인으로 재처리.
+
+    - 진행 중 job (queued/running) 이 있으면 409 로 거부
+    - 기존 chunks 전부 삭제 + documents.tags/summary/flags/doc_embedding NULL reset
+    - 새 ingest_jobs row 추가 (이전 jobs/logs 는 history 로 보존)
+    - storage_path · sha256 등 원본 식별자는 유지 — Storage 재업로드 X
+    """
+    supabase = get_supabase_client()
+
+    existing = (
+        supabase.table("documents")
+        .select("id")
+        .eq("id", doc_id)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+    if not existing.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="문서를 찾을 수 없습니다.",
+        )
+
+    latest = get_latest_job_for_doc(doc_id)
+    if latest and latest.status in ("queued", "running"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"진행 중인 작업이 있습니다 (job={latest.id}, status={latest.status}). 완료 후 다시 시도하세요.",
+        )
+
+    # chunks reset (count 측정용 → 삭제)
+    chunks_count_resp = (
+        supabase.table("chunks")
+        .select("id", count="exact")
+        .eq("doc_id", doc_id)
+        .execute()
+    )
+    chunks_deleted = chunks_count_resp.count or 0
+    if chunks_deleted > 0:
+        supabase.table("chunks").delete().eq("doc_id", doc_id).execute()
+
+    # documents 메타 reset (재계산 대상 필드들)
+    supabase.table("documents").update(
+        {
+            "tags": [],
+            "summary": None,
+            "flags": {},
+            "doc_embedding": None,
+        }
+    ).eq("id", doc_id).execute()
+
+    job = create_job(doc_id=doc_id)
+    background_tasks.add_task(run_pipeline, job.id, doc_id)
+
+    return ReingestResponse(
+        doc_id=doc_id, job_id=job.id, chunks_deleted=chunks_deleted
+    )
 
 
 # ============================================================
