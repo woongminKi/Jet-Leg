@@ -13,7 +13,7 @@ interface HomeGridProps {
 export function HomeGrid({ stats, recentDocuments }: HomeGridProps) {
   return (
     <section className="container mx-auto px-4 py-8 md:px-6 md:py-12">
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-8 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
           <NewArrivalsCard documents={recentDocuments} />
           <RecentlyViewedCard />

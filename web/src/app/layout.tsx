@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 
 const notoSansKr = Noto_Sans_KR({
   subsets: ['latin'],
-  weight: ['300', '400', '500', '700'],
+  weight: ['300', '400', '500', '600', '700'],
   variable: '--font-sans',
   display: 'swap',
 });
