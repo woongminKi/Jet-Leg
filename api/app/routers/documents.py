@@ -67,6 +67,109 @@ class DocumentStatusResponse(BaseModel):
     logs: list[dict] | None = None
 
 
+class DocumentListItem(BaseModel):
+    id: str
+    title: str
+    doc_type: str
+    source_channel: str
+    size_bytes: int
+    content_type: str
+    tags: list[str]
+    summary: str | None
+    flags: dict
+    chunks_count: int
+    latest_job_status: str | None
+    latest_job_stage: str | None
+    created_at: str
+
+
+class DocumentListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[DocumentListItem]
+
+
+# ============================================================
+# GET /documents — 리스트
+# ============================================================
+@router.get("", response_model=DocumentListResponse)
+def list_documents(
+    limit: int = Query(20, ge=1, le=100, description="한 페이지 최대 반환 건수"),
+    offset: int = Query(0, ge=0, description="건너뛸 건수 (페이지네이션)"),
+) -> DocumentListResponse:
+    """최신순 문서 리스트. 각 항목에 chunks 개수 + 최신 ingest_jobs 상태 포함.
+
+    브라우저 `/docs` (Swagger UI) 에서 Try it out 으로 즉시 확인 가능한 검증 UX.
+    """
+    supabase = get_supabase_client()
+    settings = get_settings()
+
+    total_resp = (
+        supabase.table("documents")
+        .select("id", count="exact")
+        .eq("user_id", settings.default_user_id)
+        .is_("deleted_at", "null")
+        .execute()
+    )
+    total = total_resp.count or 0
+
+    docs_resp = (
+        supabase.table("documents")
+        .select(
+            "id, title, doc_type, source_channel, size_bytes, content_type, "
+            "tags, summary, flags, created_at"
+        )
+        .eq("user_id", settings.default_user_id)
+        .is_("deleted_at", "null")
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+
+    items: list[DocumentListItem] = []
+    for doc in docs_resp.data or []:
+        doc_id = doc["id"]
+
+        chunks_resp = (
+            supabase.table("chunks")
+            .select("id", count="exact")
+            .eq("doc_id", doc_id)
+            .execute()
+        )
+        chunks_count = chunks_resp.count or 0
+
+        latest_job_resp = (
+            supabase.table("ingest_jobs")
+            .select("status, current_stage")
+            .eq("doc_id", doc_id)
+            .order("queued_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        latest_job = latest_job_resp.data[0] if latest_job_resp.data else None
+
+        items.append(
+            DocumentListItem(
+                id=doc_id,
+                title=doc["title"],
+                doc_type=doc["doc_type"],
+                source_channel=doc["source_channel"],
+                size_bytes=doc["size_bytes"],
+                content_type=doc["content_type"],
+                tags=list(doc.get("tags") or []),
+                summary=doc.get("summary"),
+                flags=dict(doc.get("flags") or {}),
+                chunks_count=chunks_count,
+                latest_job_status=latest_job["status"] if latest_job else None,
+                latest_job_stage=latest_job.get("current_stage") if latest_job else None,
+                created_at=doc["created_at"],
+            )
+        )
+
+    return DocumentListResponse(total=total, limit=limit, offset=offset, items=items)
+
+
 # ============================================================
 # POST /documents
 # ============================================================
