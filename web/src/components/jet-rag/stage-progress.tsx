@@ -8,9 +8,10 @@ interface StageProgressProps {
 }
 
 export function StageProgress({ currentStage, status }: StageProgressProps) {
-  const currentIdx = currentStage ? STAGE_ORDER.indexOf(currentStage) : -1;
+  const isDone = status === 'completed';
   const isFailed = status === 'failed';
-  const isDone = status === 'succeeded';
+  const inProgressStage = !isDone && currentStage !== 'done' ? currentStage : null;
+  const currentIdx = inProgressStage ? STAGE_ORDER.indexOf(inProgressStage) : -1;
 
   return (
     <div className="space-y-2">
@@ -39,14 +40,22 @@ export function StageProgress({ currentStage, status }: StageProgressProps) {
       </div>
       <div className="flex items-center justify-between text-[11px] text-muted-foreground">
         <span>
-          {currentStage
-            ? `현재: ${STAGE_LABELS[currentStage]}`
-            : status === 'queued'
-              ? '대기 중'
-              : '시작 전'}
+          {isDone
+            ? '모든 단계 완료'
+            : isFailed
+              ? `실패 단계: ${currentStage ? STAGE_LABELS[currentStage] : '시작 전'}`
+              : inProgressStage
+                ? `현재: ${STAGE_LABELS[inProgressStage]}`
+                : status === 'queued'
+                  ? '대기 중'
+                  : '시작 전'}
         </span>
         <span>
-          {isDone ? '완료' : isFailed ? '실패' : `${Math.max(0, currentIdx + 1)}/${STAGE_ORDER.length}`}
+          {isDone
+            ? `${STAGE_ORDER.length}/${STAGE_ORDER.length}`
+            : isFailed
+              ? '실패'
+              : `${Math.max(0, currentIdx + 1)}/${STAGE_ORDER.length}`}
         </span>
       </div>
     </div>

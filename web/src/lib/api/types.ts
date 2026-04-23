@@ -16,7 +16,12 @@ export type SourceChannel =
   | 'camera'
   | 'api';
 
-export type JobStatusValue = 'queued' | 'running' | 'succeeded' | 'failed';
+export type JobStatusValue =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
 export type StageValue =
   | 'extract'
@@ -25,7 +30,8 @@ export type StageValue =
   | 'load'
   | 'embed'
   | 'doc_embed'
-  | 'dedup';
+  | 'dedup'
+  | 'done';
 
 export interface Document {
   id: string;

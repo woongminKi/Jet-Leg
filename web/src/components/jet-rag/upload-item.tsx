@@ -96,7 +96,7 @@ function StatusBadge({ status, timedOut }: { status: string; timedOut: boolean }
         <XCircle className="h-3 w-3" /> 실패
       </Badge>
     );
-  if (status === 'succeeded')
+  if (status === 'completed')
     return (
       <Badge className="gap-1 bg-success text-success-foreground hover:bg-success/90">
         <CheckCircle2 className="h-3 w-3" /> 완료

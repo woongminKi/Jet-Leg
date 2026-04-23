@@ -18,6 +18,7 @@ export const STAGE_LABELS: Record<StageValue, string> = {
   embed: '임베딩',
   doc_embed: '문서 벡터',
   dedup: '중복 감지',
+  done: '완료',
 };
 
 export const ACCEPTED_EXTENSIONS = [
