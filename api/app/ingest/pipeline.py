@@ -12,6 +12,7 @@ import logging
 
 from .jobs import fail_job, finish_job, start_job
 from .stages.chunk import run_chunk_stage
+from .stages.doc_embed import run_doc_embed_stage
 from .stages.embed import run_embed_stage
 from .stages.extract import run_extract_stage
 from .stages.load import run_load_stage
@@ -39,16 +40,19 @@ def run_pipeline(job_id: str, doc_id: str) -> None:
 
         loaded = run_load_stage(job_id, chunks=chunk_records)
         embedded = run_embed_stage(job_id, doc_id=doc_id)
+        doc_embedded = run_doc_embed_stage(
+            job_id, doc_id=doc_id, extraction=extraction
+        )
 
-        # TODO(Day 5 B4): doc_embedding 생성
-        # TODO(Day 5 B6): Tier 2/3 dedup
+        # TODO(Day 5 B6): Tier 2/3 dedup (doc_embedding 이용)
 
         logger.info(
-            "ingest pipeline done: job=%s doc=%s chunks_loaded=%s embedded=%s warnings=%s",
+            "ingest pipeline done: job=%s doc=%s chunks_loaded=%s embedded=%s doc_embedded=%s warnings=%s",
             job_id,
             doc_id,
             loaded,
             embedded,
+            doc_embedded,
             len(extraction.warnings),
         )
 
