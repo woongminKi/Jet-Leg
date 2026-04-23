@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from app.adapters.impl.gemini_llm import GeminiLLMProvider
@@ -37,6 +38,7 @@ def run_tag_summarize_stage(
     """태그·요약을 생성해 documents 에 저장. 실패 시 graceful 이어가기."""
     update_stage(job_id, stage=_STAGE)
     log_id = begin_stage(job_id, stage=_STAGE)
+    started = time.monotonic()
 
     tags: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
@@ -57,17 +59,25 @@ def run_tag_summarize_stage(
     try:
         _persist(doc_id, tags=tags, summary=summary)
     except Exception as exc:  # noqa: BLE001 — DB 쓰기 실패는 상위로 올려 fail_job
-        end_stage(log_id, status="failed", error_msg=f"persist: {exc}")
+        duration_ms = int((time.monotonic() - started) * 1000)
+        end_stage(
+            log_id,
+            status="failed",
+            error_msg=f"persist: {exc}",
+            duration_ms=duration_ms,
+        )
         raise
 
+    duration_ms = int((time.monotonic() - started) * 1000)
     if errors:
         end_stage(
             log_id,
             status="failed" if not (tags or summary) else "succeeded",
             error_msg=" | ".join(errors) if errors else None,
+            duration_ms=duration_ms,
         )
     else:
-        end_stage(log_id, status="succeeded")
+        end_stage(log_id, status="succeeded", duration_ms=duration_ms)
 
 
 # ---------------------- LLM 호출 ----------------------
