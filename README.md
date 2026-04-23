@@ -55,11 +55,38 @@ Jet-Rag/
 
 ## 개발
 
-아직 `api/ web/ evals/` 디렉터리가 비어 있습니다. 각 주차 완료 시점의 실행 방법은 W1 Day 2부터 이 README에 추가됩니다.
-
 **요구 사항 (집 컴퓨터)**
 - Python 3.12 + [uv](https://docs.astral.sh/uv/) · Node.js 20+ + pnpm · gh CLI · Git
 - Supabase 프로젝트 + Gemini API 키 (W1 Day 1~2 필수), HF / Railway / Vercel은 해당 주차에 가입
+
+### 설치 (백엔드)
+
+도구가 없다면 먼저 [uv 설치](https://docs.astral.sh/uv/getting-started/installation/) 후 Python 3.12를 준비합니다.
+
+```bash
+uv python install 3.12   # 시스템에 3.12가 없을 때
+cd api
+uv sync                  # pyproject.toml / uv.lock 기준 의존성 설치
+```
+
+루트에 환경 변수 파일이 없으면 템플릿을 복사한 뒤 값을 채웁니다 (`api`는 상위 디렉터리의 `.env`를 읽습니다).
+
+```bash
+cd ..                   # 레포 루트
+cp .env.example .env    # 편집기로 SUPABASE_*, GEMINI_API_KEY 입력
+```
+
+### 실행 (API)
+
+```bash
+cd api
+uv run uvicorn app.main:app --reload
+```
+
+- 헬스: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+- OpenAPI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+`web/`·`evals/` 스캐폴드는 주차별로 채워지며, 프론트 설치·실행 명령은 해당 디렉터리가 생기면 이 README에 이어서 적습니다.
 
 ## KPI 목표 (발표 카드)
 
