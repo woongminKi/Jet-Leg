@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jet-rag/evals/vision_samples/expected.schema.json",
+  "title": "Vision 기대값 (한 줄 = 한 샘플, expected.jsonl)",
+  "type": "object",
+  "required": ["filename", "type"],
+  "additionalProperties": false,
+  "properties": {
+    "filename": {
+      "type": "string",
+      "description": "vision_samples/ 내부 상대 경로"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["문서", "스크린샷", "메신저대화", "화이트보드", "명함", "차트", "표", "기타"],
+      "description": "기획서 §10.4 VisionCaption.type 8종"
+    },
+    "ocr_ground_truth": {
+      "type": "string",
+      "description": "수동 확인한 정답 OCR 텍스트. 숫자·고유명사 오독 비교용. 빈 문자열 가능"
+    },
+    "structured_ground_truth": {
+      "type": ["object", "null"],
+      "description": "표·차트 등 구조적 정답 (선택). `null` 이면 구조 채점 제외"
+    },
+    "source_url": {
+      "type": "string",
+      "description": "샘플 수집 출처 (공공 자료 URL 권장)"
+    },
+    "notes": {
+      "type": "string",
+      "description": "수동 주석. 특수 케이스 (회전 / HEIC / 초고해상도 등)"
+    }
+  },
+  "examples": [
+    {
+      "filename": "msg_01.png",
+      "type": "메신저대화",
+      "ocr_ground_truth": "홍길동: 오늘 3시 회의 미루자\n김철수: 네 알겠습니다",
+      "notes": "iPhone 세로 스샷"
+    },
+    {
+      "filename": "doc_scan_01.jpg",
+      "type": "문서",
+      "ocr_ground_truth": "2026년 4월 보도자료 요약...",
+      "structured_ground_truth": null,
+      "source_url": "https://www.korea.kr/news/...",
+      "notes": "회전된 스캔본"
+    }
+  ]
+}
