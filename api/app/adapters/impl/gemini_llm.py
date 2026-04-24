@@ -1,10 +1,12 @@
-"""Gemini 2.0 Flash 기반 `LLMProvider` 구현체.
+"""Gemini 2.5 Flash 기반 `LLMProvider` 구현체.
 
 - google-genai SDK (2026년 최신) 래핑
 - system / user / assistant role 을 Gemini system_instruction + Content 구조로 매핑
 - JSON 모드 (response_mime_type='application/json')
-- 이미지 첨부 (Vision — W2 부터 실사용)
 - 3회 retry + 지수 백오프 (§10.10)
+
+Vision 은 `GeminiVisionCaptioner` (adapters/impl/gemini_vision.py) 로 분리.
+`_attach_images` 는 LLM 텍스트 생성 보조용으로만 유지하며 mime 은 PNG 고정 (레거시).
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ T = TypeVar("T")
 
 
 class GeminiLLMProvider:
-    """`LLMProvider` Protocol 구현체 (Gemini 2.0 Flash 기본)."""
+    """`LLMProvider` Protocol 구현체 (Gemini 2.5 Flash 기본)."""
 
     def __init__(self, *, model: str = _DEFAULT_MODEL) -> None:
         self._model = model

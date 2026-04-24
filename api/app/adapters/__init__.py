@@ -3,6 +3,7 @@ from .llm import ChatMessage, LLMProvider
 from .parser import DocumentParser, ExtractedSection, ExtractionResult
 from .storage import BlobStorage, StoredBlob
 from .vectorstore import ChunkRecord, SearchHit, VectorStore
+from .vision import VisionCaption, VisionCaptioner, VisionCategory
 
 __all__ = [
     "BlobStorage",
@@ -17,4 +18,7 @@ __all__ = [
     "SearchHit",
     "StoredBlob",
     "VectorStore",
+    "VisionCaption",
+    "VisionCaptioner",
+    "VisionCategory",
 ]
