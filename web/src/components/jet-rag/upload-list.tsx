@@ -6,9 +6,10 @@ import { UploadItem } from './upload-item';
 interface UploadListProps {
   items: UploadItemData[];
   onReingest?: (localId: string, jobId: string) => void;
+  onCompleted?: (docId: string) => void;
 }
 
-export function UploadList({ items, onReingest }: UploadListProps) {
+export function UploadList({ items, onReingest, onCompleted }: UploadListProps) {
   if (items.length === 0) {
     return (
       <p className="text-center text-sm text-muted-foreground">
@@ -20,7 +21,11 @@ export function UploadList({ items, onReingest }: UploadListProps) {
     <ul className="space-y-3">
       {items.map((item) => (
         <li key={item.localId}>
-          <UploadItem data={item} onReingest={onReingest} />
+          <UploadItem
+            data={item}
+            onReingest={onReingest}
+            onCompleted={onCompleted}
+          />
         </li>
       ))}
     </ul>

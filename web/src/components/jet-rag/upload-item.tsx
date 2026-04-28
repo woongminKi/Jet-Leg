@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { CheckCircle2, FileIcon, Loader2, RefreshCw, XCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -25,13 +26,29 @@ export interface UploadItemData {
 interface UploadItemProps {
   data: UploadItemData;
   onReingest?: (localId: string, jobId: string) => void;
+  /** 인제스트가 completed 로 전이된 시점 1회 호출 (중복 호출 방지). */
+  onCompleted?: (docId: string) => void;
 }
 
-export function UploadItem({ data, onReingest }: UploadItemProps) {
+export function UploadItem({ data, onReingest, onCompleted }: UploadItemProps) {
   const enabled = !!data.docId && !data.duplicated;
   const polling = useJobStatusPolling(data.docId, enabled, data.retryNonce);
   const job = polling.job;
   const status = job?.status ?? (data.duplicated ? 'duplicated' : data.uploadError ? 'error' : 'queued');
+
+  // completed 전이 1회 알림 (자동 이동 트리거)
+  const completedFiredRef = useRef(false);
+  useEffect(() => {
+    if (
+      job?.status === 'completed' &&
+      !completedFiredRef.current &&
+      data.docId &&
+      onCompleted
+    ) {
+      completedFiredRef.current = true;
+      onCompleted(data.docId);
+    }
+  }, [job?.status, data.docId, onCompleted]);
 
   const [retryLoading, setRetryLoading] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -88,6 +105,16 @@ export function UploadItem({ data, onReingest }: UploadItemProps) {
                     className={`h-3 w-3 ${retryLoading ? 'animate-spin' : ''}`}
                   />
                   재시도
+                </Button>
+              )}
+              {(job?.status === 'completed' || data.duplicated) && data.docId && (
+                <Button
+                  asChild
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                >
+                  <Link href={`/doc/${data.docId}`}>상세 보기</Link>
                 </Button>
               )}
               <StatusBadge status={status} timedOut={polling.timedOut} />
