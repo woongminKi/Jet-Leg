@@ -6,10 +6,9 @@ import { CheckCircle2, FileIcon, Loader2, RefreshCw, XCircle } from 'lucide-reac
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { useJobStatusPolling } from '@/lib/hooks/use-job-status-polling';
 import { formatBytes } from '@/lib/format';
 import { inferDocType } from '@/lib/stages';
-import { ApiError, reingestDocument } from '@/lib/api';
+import { ApiError, reingestDocument, type JobStatus } from '@/lib/api';
 import { StageProgress } from './stage-progress';
 
 export interface UploadItemData {
@@ -25,15 +24,25 @@ export interface UploadItemData {
 
 interface UploadItemProps {
   data: UploadItemData;
+  /** 부모(`UploadList`)의 batch 폴링 결과 — 해당 doc_id 의 latest job. */
+  job: JobStatus | null;
+  /** 부모 폴러가 5분 / 연속 5회 에러로 timed out 상태 진입했는지. */
+  timedOut: boolean;
+  /** 부모 폴러의 마지막 호출 에러 메시지 (있을 때만 노출). */
+  pollingError?: string | null;
   onReingest?: (localId: string, jobId: string) => void;
   /** 인제스트가 completed 로 전이된 시점 1회 호출 (중복 호출 방지). */
   onCompleted?: (docId: string) => void;
 }
 
-export function UploadItem({ data, onReingest, onCompleted }: UploadItemProps) {
-  const enabled = !!data.docId && !data.duplicated;
-  const polling = useJobStatusPolling(data.docId, enabled, data.retryNonce);
-  const job = polling.job;
+export function UploadItem({
+  data,
+  job,
+  timedOut,
+  pollingError,
+  onReingest,
+  onCompleted,
+}: UploadItemProps) {
   const status = job?.status ?? (data.duplicated ? 'duplicated' : data.uploadError ? 'error' : 'queued');
 
   // completed 전이 1회 알림 (자동 이동 트리거)
@@ -49,6 +58,11 @@ export function UploadItem({ data, onReingest, onCompleted }: UploadItemProps) {
       onCompleted(data.docId);
     }
   }, [job?.status, data.docId, onCompleted]);
+
+  // retry 후 새 job 진입 시 onCompleted 한 번 더 발동되도록 ref 리셋
+  useEffect(() => {
+    completedFiredRef.current = false;
+  }, [data.retryNonce]);
 
   const [retryLoading, setRetryLoading] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -117,7 +131,7 @@ export function UploadItem({ data, onReingest, onCompleted }: UploadItemProps) {
                   <Link href={`/doc/${data.docId}`}>상세 보기</Link>
                 </Button>
               )}
-              <StatusBadge status={status} timedOut={polling.timedOut} />
+              <StatusBadge status={status} timedOut={timedOut} />
             </div>
           </div>
 
@@ -135,7 +149,7 @@ export function UploadItem({ data, onReingest, onCompleted }: UploadItemProps) {
                 currentStage={job?.current_stage ?? null}
                 status={(job?.status ?? 'queued') as never}
               />
-              {polling.timedOut && (
+              {timedOut && (
                 <p className="text-xs text-muted-foreground">
                   처리가 오래 걸리고 있어요. 잠시 후 새로고침해 보세요.
                 </p>
@@ -150,9 +164,9 @@ export function UploadItem({ data, onReingest, onCompleted }: UploadItemProps) {
                   {retryError}
                 </p>
               )}
-              {polling.error && !job && (
+              {pollingError && !job && (
                 <p className="text-xs text-muted-foreground">
-                  상태를 가져오지 못했습니다: {polling.error}
+                  상태를 가져오지 못했습니다: {pollingError}
                 </p>
               )}
             </>

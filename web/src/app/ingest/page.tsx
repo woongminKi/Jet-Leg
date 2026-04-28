@@ -65,7 +65,7 @@ export default function IngestPage() {
   };
 
   // 재시도 성공 시 같은 doc_id 의 새 job 으로 갱신 + retryNonce 증가로
-  // useJobStatusPolling 의 effect 를 강제 재실행시킨다.
+  // useDocsBatchPolling 의 wakeUpKey 가 바뀌어 폴링이 재개된다.
   const handleReingest = (localId: string, jobId: string) => {
     setItems((prev) =>
       prev.map((it) =>
