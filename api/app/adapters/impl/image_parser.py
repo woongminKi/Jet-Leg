@@ -99,6 +99,7 @@ class ImageParser:
             sections=sections,
             raw_text=raw_text,
             warnings=warnings,
+            metadata={"vision_type": caption.type},  # content_gate 의 메신저대화 감지용
         )
 
 

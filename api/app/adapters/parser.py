@@ -16,6 +16,9 @@ class ExtractionResult:
     sections: list[ExtractedSection]
     raw_text: str
     warnings: list[str] = field(default_factory=list)  # 부분 실패 메시지
+    # 파서별 메타. ImageParser → {"vision_type": ...}, 그 외 파서는 미사용 가능.
+    # content_gate 등 후속 스테이지가 cross-parser 메타에 의존할 때 escape hatch.
+    metadata: dict = field(default_factory=dict)
 
 
 class DocumentParser(Protocol):
