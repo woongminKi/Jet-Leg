@@ -15,6 +15,8 @@ from __future__ import annotations
 import filetype
 from fastapi import HTTPException, status
 
+from app.adapters.impl.hwpml_parser import is_hwpml_bytes
+
 # OLE2 / Compound File Binary 시그니처 — HWP 5.x, 옛 Office (.doc/.xls/.ppt) 공통.
 # filetype 1.2.0 미인식이라 본 모듈에서 직접 prefix 검증.
 _OLE2_PREFIX = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
@@ -58,14 +60,17 @@ def validate_magic(*, ext: str, raw_head: bytes) -> None:
             detail=f"지원되지 않는 확장자입니다: {ext}",
         )
 
-    # HWP 5.x — OLE2 prefix 직접 검증 (filetype 미보유 매처)
+    # HWP — OLE2 (5.x) 또는 HWPML XML (법제처 export 등) 둘 다 허용.
+    # 어느 변형인지 결정은 extract dispatcher 가 raw bytes prefix 로 분기.
     if ext == ".hwp":
-        if not raw_head.startswith(_OLE2_PREFIX):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="HWP 5.x 시그니처(OLE2)가 아닙니다.",
-            )
-        return
+        if raw_head.startswith(_OLE2_PREFIX):
+            return
+        if is_hwpml_bytes(raw_head):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HWP 5.x(OLE2) 또는 HWPML(XML) 시그니처가 아닙니다.",
+        )
 
     # 평문 (.txt/.md) — 시그니처 없음, 매직바이트 검증 스킵
     if not expected:

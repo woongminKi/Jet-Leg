@@ -1,11 +1,13 @@
 """Extract 스테이지 — 포맷별 원본 파일 추출 (기획서 §10.2 [4] · §10.3).
 
-지원 포맷 (W2 Day 4 까지 누적)
+지원 포맷 (W2 + 후속 누적)
 - PDF: `PyMuPDFParser` — 블록 단위 섹션·bbox·페이지 (스캔본 감지 시 ImageParser 재라우팅)
 - HWPX: `HwpxParser` — section 단위 단락 (Day 3, §3.C)
 - 이미지: `ImageParser` (Vision composition) — PNG/JPEG/HEIC (Day 3, §3.D)
 - URL: `UrlParser` — trafilatura 본문 추출 (Day 4, §3.E)
-- HWP 5.x: `Hwp5Parser` — pyhwp `hwp5txt` CLI subprocess (Day 4, §3.F)
+- HWP 5.x: `Hwp5Parser` — pyhwp `hwp5txt` CLI + olefile fallback (Day 4 §3.F + DE-52)
+- HWPML: `HwpmlParser` — 법제처/한컴 옛 XML 직렬화. doc_type='hwp' 그대로 두고
+  raw bytes prefix sniff 로 dispatcher 가 분기 (DE-39 패턴)
 - 그 외(docx/pptx/txt/md): **graceful skip** — `flags.extract_skipped=true` 마킹.
   W3 에 DOCX/PPTX 어댑터 도입 시 `/documents/{id}/reingest` 로 재처리.
 """
@@ -19,6 +21,7 @@ from typing import Any
 import fitz  # PyMuPDF — 스캔 PDF rerouting 시 페이지를 PNG 로 렌더
 
 from app.adapters.impl.hwp_parser import Hwp5Parser
+from app.adapters.impl.hwpml_parser import HwpmlParser, is_hwpml_bytes
 from app.adapters.impl.hwpx_parser import HwpxParser
 from app.adapters.impl.image_parser import ImageParser
 from app.adapters.impl.pymupdf_parser import PyMuPDFParser
@@ -37,6 +40,7 @@ _hwpx_parser = HwpxParser()
 _image_parser = ImageParser()
 _url_parser = UrlParser()
 _hwp_parser = Hwp5Parser()
+_hwpml_parser = HwpmlParser()
 
 # doc_type → DocumentParser 디스패처. W2 까지 PDF + HWPX + image + URL + HWP 5.x.
 # DOCX/PPTX 는 W3 이월.
@@ -85,6 +89,17 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
 
     with stage(job_id, _STAGE):
         data = storage.get(doc["storage_path"])
+
+        # HWP 변형 분기 — doc_type='hwp' 가 OLE2 (Hwp5Parser) 와 HWPML XML
+        # (HwpmlParser) 둘 다 받음. raw bytes prefix 로 결정 (DE-39 패턴).
+        if doc_type == "hwp" and is_hwpml_bytes(data[:4096]):
+            logger.info(
+                "HWPML(XML) 감지 → HwpmlParser 사용 (file=%s, doc_id=%s)",
+                file_name,
+                doc_id,
+            )
+            parser = _hwpml_parser
+
         result = parser.parse(data, file_name=file_name)
 
         # 스캔 PDF 재라우팅 (§3.A′) — PyMuPDF 가 텍스트 추출에 실패한 케이스

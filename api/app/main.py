@@ -13,7 +13,7 @@ app = FastAPI(
 # 로컬 Next.js 개발 서버에서 직접 호출 허용. 운영 배포 시 도메인 화이트리스트로 교체할 것.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3001"],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
