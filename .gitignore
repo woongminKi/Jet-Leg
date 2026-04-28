@@ -8,6 +8,9 @@ credentials.json
 service-account.json
 .mcp.json
 
+# === Claude Code (개인 권한 오버라이드, 팀 공유 대상 아님) ===
+.claude/settings.local.json
+
 # === Python ===
 __pycache__/
 *.py[cod]
