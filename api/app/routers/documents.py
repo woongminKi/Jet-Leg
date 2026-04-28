@@ -142,6 +142,28 @@ class BatchStatusResponse(BaseModel):
 _BATCH_STATUS_MAX_IDS = 50
 
 
+class DocumentDetailResponse(BaseModel):
+    """`/doc/[id]` 경량판 (W2 §3.M, F′-α2) 의 단건 종합 응답.
+
+    title·doc_type·tags·summary·flags 같은 메타와 인제스트 진행 상태를 한 번에 노출.
+    chunks 본문 리스트는 W4 본격판에서 추가.
+    """
+    id: str
+    title: str
+    doc_type: str
+    source_channel: str
+    size_bytes: int
+    content_type: str
+    tags: list[str]
+    summary: str | None
+    flags: dict
+    chunks_count: int
+    latest_job: JobStatus | None
+    created_at: str
+    received_ms: int | None
+    source_url: str | None  # `flags.source_url` 추출 — URL 인제스트 문서만
+
+
 # ============================================================
 # GET /documents — 리스트
 # ============================================================
@@ -715,6 +737,78 @@ def batch_status(
         )
 
     return BatchStatusResponse(items=items)
+
+
+# ============================================================
+# GET /documents/{doc_id} — `/doc/[id]` 경량판 (W2 §3.M)
+# ============================================================
+@router.get("/{doc_id}", response_model=DocumentDetailResponse)
+def get_document(doc_id: str) -> DocumentDetailResponse:
+    """단건 종합 조회 — `/doc/[id]` 페이지가 한 번에 필요한 메타·태그·요약·진행 상태."""
+    supabase = get_supabase_client()
+    doc_resp = (
+        supabase.table("documents")
+        .select(
+            "id, title, doc_type, source_channel, size_bytes, content_type, "
+            "tags, summary, flags, created_at, received_ms"
+        )
+        .eq("id", doc_id)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+    rows = doc_resp.data or []
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="문서를 찾을 수 없습니다.",
+        )
+    doc = rows[0]
+
+    chunks_resp = (
+        supabase.table("chunks")
+        .select("id", count="exact")
+        .eq("doc_id", doc_id)
+        .execute()
+    )
+    chunks_count = chunks_resp.count or 0
+
+    job = get_latest_job_for_doc(doc_id)
+    latest_job = (
+        JobStatus(
+            job_id=job.id,
+            status=job.status,
+            current_stage=job.current_stage,
+            attempts=job.attempts,
+            error_msg=job.error_msg,
+            queued_at=job.queued_at,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+        )
+        if job
+        else None
+    )
+
+    flags = dict(doc.get("flags") or {})
+    source_url_raw = flags.get("source_url")
+    source_url = source_url_raw if isinstance(source_url_raw, str) else None
+
+    return DocumentDetailResponse(
+        id=doc["id"],
+        title=doc["title"],
+        doc_type=doc["doc_type"],
+        source_channel=doc["source_channel"],
+        size_bytes=doc["size_bytes"],
+        content_type=doc["content_type"],
+        tags=list(doc.get("tags") or []),
+        summary=doc.get("summary"),
+        flags=flags,
+        chunks_count=chunks_count,
+        latest_job=latest_job,
+        created_at=doc["created_at"],
+        received_ms=doc.get("received_ms"),
+        source_url=source_url,
+    )
 
 
 # ============================================================
