@@ -130,6 +130,18 @@ class DocumentListResponse(BaseModel):
     items: list[DocumentListItem]
 
 
+class BatchStatusItem(BaseModel):
+    doc_id: str
+    job: JobStatus | None  # None = 해당 doc_id 의 ingest_jobs row 없음 (또는 doc 자체 없음)
+
+
+class BatchStatusResponse(BaseModel):
+    items: list[BatchStatusItem]
+
+
+_BATCH_STATUS_MAX_IDS = 50
+
+
 # ============================================================
 # GET /documents — 리스트
 # ============================================================
@@ -631,6 +643,78 @@ def _reset_doc_for_reingest(supabase, doc_id: str) -> int:
     ).eq("id", doc_id).execute()
 
     return chunks_deleted
+
+
+# ============================================================
+# GET /documents/batch-status
+# ============================================================
+@router.get("/batch-status", response_model=BatchStatusResponse)
+def batch_status(
+    ids: str = Query(
+        ...,
+        description="콤마 구분 doc_id 리스트 (max 50). 예: ?ids=uuid1,uuid2",
+    ),
+) -> BatchStatusResponse:
+    """여러 doc_id 의 latest job status 를 한 번에 조회 (W2 §3.H, W1 §6 이월).
+
+    프론트 폴러가 doc_id 단위 N회 → batch 단위 1회로 호출 횟수 절감.
+    1 SQL 로 모든 jobs 가져온 뒤 Python 측에서 doc_id 별 latest 만 추출.
+    """
+    doc_ids = [s.strip() for s in ids.split(",") if s.strip()]
+    if not doc_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ids 가 비어있습니다.",
+        )
+    if len(doc_ids) > _BATCH_STATUS_MAX_IDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"한 번에 최대 {_BATCH_STATUS_MAX_IDS}개 (요청: {len(doc_ids)})",
+        )
+
+    supabase = get_supabase_client()
+    jobs_resp = (
+        supabase.table("ingest_jobs")
+        .select(
+            "id, doc_id, status, current_stage, attempts, error_msg, "
+            "queued_at, started_at, finished_at"
+        )
+        .in_("doc_id", doc_ids)
+        .order("queued_at", desc=True)
+        .execute()
+    )
+    rows = jobs_resp.data or []
+
+    # 각 doc_id 의 첫 번째 row (queued_at 최대) 가 latest
+    latest_by_doc: dict[str, dict] = {}
+    for row in rows:
+        doc_id = row["doc_id"]
+        if doc_id not in latest_by_doc:
+            latest_by_doc[doc_id] = row
+
+    items: list[BatchStatusItem] = []
+    for doc_id in doc_ids:
+        row = latest_by_doc.get(doc_id)
+        if row is None:
+            items.append(BatchStatusItem(doc_id=doc_id, job=None))
+            continue
+        items.append(
+            BatchStatusItem(
+                doc_id=doc_id,
+                job=JobStatus(
+                    job_id=row["id"],
+                    status=row["status"],
+                    current_stage=row.get("current_stage"),
+                    attempts=row.get("attempts", 0),
+                    error_msg=row.get("error_msg"),
+                    queued_at=row["queued_at"],
+                    started_at=row.get("started_at"),
+                    finished_at=row.get("finished_at"),
+                ),
+            )
+        )
+
+    return BatchStatusResponse(items=items)
 
 
 # ============================================================
