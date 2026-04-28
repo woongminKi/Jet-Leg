@@ -20,6 +20,11 @@ router = APIRouter(tags=["stats"])
 # 한국 시간대 — 단일 사용자 MVP 기준이라 하드코딩
 KST = timezone(timedelta(hours=9))
 
+# 기획서 §10.11 — 수신 응답 < 2초 SLO
+SLO_TARGET_MS = 2000
+# pdf_50p 버킷의 size 임계값 — 50MB 한도의 절반 (큰 PDF 시나리오 대표값)
+PDF_50P_THRESHOLD_BYTES = 25 * 1024 * 1024
+
 
 class DocumentsStats(BaseModel):
     total: int
@@ -43,11 +48,24 @@ class TagCount(BaseModel):
     count: int
 
 
+class SloBucketStats(BaseModel):
+    """`/stats.slo_buckets` 의 버킷별 측정값.
+
+    - p95_ms: received_ms 95퍼센타일 (sample 0건이면 None)
+    - sample_count: 해당 버킷에 속한 documents 수 (received_ms IS NOT NULL 만)
+    - pass_rate: received_ms < 2000 인 비율 (0.0 ~ 1.0). sample 0건이면 None
+    """
+    p95_ms: int | None
+    sample_count: int
+    pass_rate: float | None
+
+
 class StatsResponse(BaseModel):
     documents: DocumentsStats
     chunks_total: int
     jobs: JobsStats
     popular_tags: list[TagCount]  # 사용 빈도 top-10
+    slo_buckets: dict[str, SloBucketStats]  # W2 §3.A: pdf_50p · image · pdf_scan · hwp · url
     generated_at: str
 
 
@@ -59,7 +77,10 @@ def stats() -> StatsResponse:
     # ---- documents ----
     all_docs = (
         supabase.table("documents")
-        .select("doc_type, source_channel, size_bytes, flags, tags, created_at")
+        .select(
+            "doc_type, source_channel, size_bytes, flags, tags, "
+            "created_at, received_ms"  # W2 §3.A SLO 측정용
+        )
         .eq("user_id", user_id)
         .is_("deleted_at", "null")
         .execute()
@@ -129,6 +150,10 @@ def stats() -> StatsResponse:
     )
     failed_sample = failed_resp.data or []
 
+    # SLO 버킷 — failed 포함 all_docs 기준. received_ms 는 수신 단계 SLO 만 반영하므로
+    # 파이프라인 단계 실패 doc 도 receive 자체는 성공한 유효 sample.
+    slo_buckets = _compute_slo_buckets(all_docs)
+
     return StatsResponse(
         documents=DocumentsStats(
             total=len(docs),
@@ -147,11 +172,69 @@ def stats() -> StatsResponse:
             failed_sample=failed_sample,
         ),
         popular_tags=popular_tags,
+        slo_buckets=slo_buckets,
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
 # ---------------------- helpers ----------------------
+
+
+def _compute_slo_buckets(docs: list[dict]) -> dict[str, SloBucketStats]:
+    """W2 §3.A 의 5개 SLO 버킷별 received_ms 집계.
+
+    버킷 분류 규칙:
+      - pdf_scan: doc_type=pdf AND flags.scan=true (스캔 PDF, Vision 재라우팅 대상)
+      - pdf_50p:  doc_type=pdf AND size_bytes ≥ 25MB AND NOT scan (큰 PDF, SLO 한계 시나리오)
+      - image:    doc_type=image
+      - hwp:      doc_type ∈ {hwp, hwpx}
+      - url:      doc_type=url
+
+    소형 비스캔 PDF / docx / pptx / txt / md 는 어떤 버킷에도 포함 X — 본 5종은
+    SLO 측정 대상으로 명세 v0.3 §3.A AC 에 명시된 시나리오.
+    """
+    buckets: dict[str, list[int]] = {
+        "pdf_50p": [],
+        "image": [],
+        "pdf_scan": [],
+        "hwp": [],
+        "url": [],
+    }
+    for d in docs:
+        ms = d.get("received_ms")
+        if ms is None:
+            continue  # received_ms 미측정 (W2 Day 2 이전 업로드분) 은 제외
+        doc_type = d.get("doc_type")
+        size = d.get("size_bytes") or 0
+        flags = d.get("flags") or {}
+        is_scan = bool(flags.get("scan"))
+
+        if doc_type == "pdf":
+            if is_scan:
+                buckets["pdf_scan"].append(ms)
+            elif size >= PDF_50P_THRESHOLD_BYTES:
+                buckets["pdf_50p"].append(ms)
+        elif doc_type == "image":
+            buckets["image"].append(ms)
+        elif doc_type in ("hwp", "hwpx"):
+            buckets["hwp"].append(ms)
+        elif doc_type == "url":
+            buckets["url"].append(ms)
+
+    return {name: _bucket_stats(samples) for name, samples in buckets.items()}
+
+
+def _bucket_stats(samples: list[int]) -> SloBucketStats:
+    n = len(samples)
+    if n == 0:
+        return SloBucketStats(p95_ms=None, sample_count=0, pass_rate=None)
+    sorted_samples = sorted(samples)
+    # nearest-rank p95: index = ceil(0.95 * n) - 1, 작은 n 안전하게 int(0.95 * (n-1))
+    p95_idx = int(0.95 * (n - 1))
+    p95 = sorted_samples[p95_idx]
+    pass_count = sum(1 for ms in samples if ms < SLO_TARGET_MS)
+    pass_rate = round(pass_count / n, 4)
+    return SloBucketStats(p95_ms=p95, sample_count=n, pass_rate=pass_rate)
 
 
 def _parse_created_at_kst(value: str | None) -> datetime | None:
