@@ -13,6 +13,7 @@ from .jobs import (
     update_stage,
 )
 from .pipeline import run_pipeline
+from .upload import run_full_ingest
 
 __all__ = [
     "IngestJob",
@@ -23,6 +24,7 @@ __all__ = [
     "finish_job",
     "get_latest_job_for_doc",
     "list_logs_for_job",
+    "run_full_ingest",
     "run_pipeline",
     "skip_stage",
     "stage",
