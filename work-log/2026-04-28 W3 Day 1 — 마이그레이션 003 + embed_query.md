@@ -8,13 +8,14 @@
 
 ## 0. 다음 세션 진입점
 
-### 0.1 working tree 상태
-- `api/migrations/003_hybrid_search.sql` 신규 — 미커밋
-- `api/app/adapters/impl/bgem3_hf_embedding.py` — `embed_query` 메서드 추가, 미커밋
-- 본 work-log 신규 — 미커밋
-- **사용자 액션 필요**: 003 마이그레이션을 Supabase Studio SQL Editor 에서 직접 적용 (MCP `--read-only` 가드 회피)
+### 0.1 working tree 상태 (최종, Day 1 마감 시점)
+- `api/migrations/003_hybrid_search.sql` 신규 — ✅ 커밋 `5e3d63c`
+- `api/app/adapters/impl/bgem3_hf_embedding.py` — `embed_query` 메서드 추가, ✅ 커밋 `5e3d63c`
+- 본 work-log 신규 — ✅ 커밋 `5e3d63c`
+- **003 Studio 적용** — ✅ 완료 (사용자, 2026-04-28 23:29 KST). RPC live smoke 통과
+- **핸드오프 문서**: `work-log/2026-04-28 W3 진입 핸드오프.md` — 다른 컴퓨터에서 5분 안에 Day 2 이어가는 절차
 
-### 0.2 사용자 액션 — 003 마이그레이션 적용
+### 0.2 사용자 액션 — 003 마이그레이션 적용 ✅ 완료
 
 ```bash
 # 1) Supabase Studio 에 로그인 → project ref: mpmtydudhojpukuuadrd
@@ -95,6 +96,30 @@ def embed_query(self, text: str) -> list[float]:
 - public method 노출 — `embed`, `embed_batch`, `embed_query` 3종 + `dense_dim`
 - 응답 dim == 1024
 - 모든 element `float` 타입
+
+### 1.4 003 Studio 적용 + RPC live smoke (사용자, 2026-04-28 23:29 KST)
+
+사용자가 Supabase Studio SQL Editor 에 003 본문 붙여넣기 + Run → `Success. No rows returned` 응답.
+
+End-to-end RPC 검증:
+```
+1. embed_query: 1024 dim ✓
+2. RPC search_hybrid_rrf 호출: ✓
+   결과 row 수: 5 (top 5)
+=== 응답 예시 ('공사대금 합의해지' 쿼리) ===
+  [1] chunk_id=6eb87f37... doc_id=49ef8d01... rrf_score=0.016393 dense_rank=1 sparse_rank=None
+  [2] chunk_id=b3b16eac... doc_id=49ef8d01... rrf_score=0.016129 dense_rank=2 sparse_rank=None
+  ... (top 5 모두 dense_rank 채워짐, sparse_rank=None)
+```
+
+검증 의미:
+- HNSW 인덱스 등록 ✓ (RPC 의 dense_hits CTE 가 작동)
+- chunks.fts STORED tsvector 컬럼 등록 ✓ (sparse_hits CTE 가 syntax error 없이 실행)
+- pg_trgm extension 등록 ✓ (003 의 ALTER 모두 성공)
+- search_hybrid_rrf 함수 등록 ✓ (RPC 호출 성공)
+- RRF fusion 로직 ✓ (dense 만으로 5 row, sparse 0건이라 dense fallback 정상)
+
+sparse_rank=None 은 baseline 6 doc 의 chunks.text 에 `'공사대금'` 또는 `'합의해지'` 정확 토큰 부재 (cleanup 후 law sample2 삭제). simple tokenizer 의 한국어 한계 — DE-57 의 알려진 trade-off, dense (BGE-M3) 가 보완하는 본질 그대로 작동.
 
 ---
 
