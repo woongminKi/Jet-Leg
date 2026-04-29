@@ -1,7 +1,7 @@
 """인제스트 파이프라인 entrypoint — `BackgroundTasks` 로 호출되는 단일 진입점.
 
-8-stage (W2 명세 v0.3 §3.A 확정)
-    extract → chunk → content_gate → tag_summarize → load → embed → doc_embed → dedup
+9-stage (W3 v0.5 §3.G(3) 에서 chunk_filter 추가)
+    extract → chunk → chunk_filter → content_gate → tag_summarize → load → embed → doc_embed → dedup
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from app.db import get_supabase_client
 
 from .jobs import _now_iso, fail_job, finish_job, start_job
 from .stages.chunk import run_chunk_stage
+from .stages.chunk_filter import run_chunk_filter_stage
 from .stages.content_gate import run_content_gate_stage
 from .stages.dedup import run_dedup_stage
 from .stages.doc_embed import run_doc_embed_stage
@@ -39,6 +40,12 @@ def run_pipeline(job_id: str, doc_id: str) -> None:
 
         chunk_records = run_chunk_stage(
             job_id, doc_id=doc_id, extraction=extraction
+        )
+
+        # chunk_filter — 표 노이즈/헤더-푸터 의심 청크에 flags.filtered_reason 마킹.
+        # content_gate 보다 먼저 — content_gate 는 metadata 만 만지므로 flags 보존됨.
+        chunk_records = run_chunk_filter_stage(
+            job_id, doc_id=doc_id, chunks=chunk_records
         )
 
         # content_gate — chunks metadata 에 PII/워터마크 부착 + doc flags 마킹

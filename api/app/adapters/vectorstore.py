@@ -14,6 +14,10 @@ class ChunkRecord:
     bbox: tuple[float, float, float, float] | None = None   # x0, y0, x1, y1 (PDF 좌표)
     char_range: tuple[int, int] | None = None
     metadata: dict = field(default_factory=dict)
+    # W3 v0.5 §3.G(3) — chunks.flags JSONB 컬럼 (마이그레이션 004) 미러링.
+    # chunk_filter 가 표 노이즈/헤더-푸터 의심 청크에 {"filtered_reason": "..."} 마킹 →
+    # search_hybrid_rrf 의 WHERE 절이 `flags->>'filtered_reason' IS NULL` 로 자동 제외.
+    flags: dict = field(default_factory=dict)
     chunk_id: str | None = None  # None 이면 저장 시 서버에서 생성
 
 

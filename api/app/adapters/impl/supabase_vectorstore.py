@@ -80,6 +80,9 @@ class SupabasePgVectorStore:
             "section_title": chunk.section_title,
             "sparse_json": chunk.sparse_json or {},
             "metadata": chunk.metadata or {},
+            # 마이그레이션 004 의 chunks.flags JSONB (NOT NULL DEFAULT '{}') 미러링.
+            # 빈 dict 도 명시 직렬화 — 직전 레코드 flags 가 잔존하지 않도록.
+            "flags": chunk.flags or {},
         }
         if chunk.bbox is not None:
             row["bbox"] = list(chunk.bbox)
