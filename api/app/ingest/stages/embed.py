@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 
-from app.adapters.impl.bgem3_hf_embedding import BGEM3HFEmbeddingProvider
+from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
 from app.db import get_supabase_client
 from app.ingest.jobs import stage
 
@@ -44,7 +44,7 @@ def run_embed_stage(job_id: str, *, doc_id: str) -> int:
             logger.info("embed: doc=%s 임베딩 필요한 청크 없음", doc_id)
             return 0
 
-        provider = BGEM3HFEmbeddingProvider()
+        provider = get_bgem3_provider()
         total = 0
         for i in range(0, len(rows), _BATCH_SIZE):
             batch = rows[i : i + _BATCH_SIZE]

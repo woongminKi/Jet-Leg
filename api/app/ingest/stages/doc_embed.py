@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from app.adapters.impl.bgem3_hf_embedding import BGEM3HFEmbeddingProvider
+from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
 from app.adapters.parser import ExtractionResult
 from app.db import get_supabase_client
 from app.ingest.jobs import stage
@@ -47,7 +47,7 @@ def run_doc_embed_stage(
             logger.info("doc_embed: doc=%s 소스 텍스트 없음 → 스킵", doc_id)
             return False
 
-        provider = BGEM3HFEmbeddingProvider()
+        provider = get_bgem3_provider()
         emb = provider.embed(source)
 
         (

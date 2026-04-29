@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from functools import lru_cache
 from typing import Callable, TypeVar
 
 import httpx
@@ -157,6 +158,30 @@ def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in _RETRYABLE_STATUS_CODES
     return False
+
+
+def is_transient_hf_error(exc: Exception) -> bool:
+    """search.py 의 fallback 분기 — `_is_retryable` 와 동일 분류 (외부 재사용 alias).
+
+    True:  network/server transient (5xx, 429, connection error 등) → sparse-only fallback 허용
+    False: 4xx 영구 실패 (401 토큰 만료 / 404 endpoint 변경 / 400 잘못된 request) →
+           503 raise 하여 사용자에게 "검색 일시 오류" 노출. silent ranking degradation 방지.
+    """
+    return _is_retryable(exc)
+
+
+# ---------------------- 싱글톤 헬퍼 ----------------------
+
+
+@lru_cache(maxsize=1)
+def get_bgem3_provider() -> BGEM3HFEmbeddingProvider:
+    """프로세스당 단일 인스턴스 — `httpx.Client` 누수 방지.
+
+    이전: search.py / ingest 스테이지가 매 호출마다 `BGEM3HFEmbeddingProvider()` 생성
+        → 매번 신규 `httpx.Client` (close 안 됨) → 검색 100회 = FD leak 100건.
+    이후: `lru_cache(maxsize=1)` 로 프로세스당 1개 공유. `httpx.Client` 자체가 thread-safe.
+    """
+    return BGEM3HFEmbeddingProvider()
 
 
 def _with_retry(fn: Callable[[], T], *, label: str) -> T:
