@@ -15,9 +15,10 @@ W4-Q-14 적용 항목 (청킹 정책 검토 §6 의 1·2·3·5):
 - 4.5: 3차 병합 시 section_title 우선순위 swap — 병합되는 쪽 (section) 의
        title 이 더 의미 있을 가능성에 가중 (KPI §13.1 section_title 채움 비율 직접 영향)
 
-W5 이월 (4.3 따옴표/괄호 보호):
-- _MAX_SIZE 위반 risk + 2h budget 의 trade-off 가 가장 큼 → W4 명세 §3.W4-Q-14 비판적
-  재고대로 W5 로 이월. 인용문 중간 분리 risk 잔존하지만 측정 가능 → 회귀 결과 보고 결정.
+W5 추가 (4.3 따옴표/괄호 보호 — W4 이월 회수):
+- 청크 경계가 odd-count `"` 또는 `(`/`[`/`{`/`「`/`『` 이면 다음 sent 흡수해서 짝 맞춤
+- `_MAX_SIZE` 위반 시 fallback (현재 동작 유지) — 강제 cut
+- 인용문 중간 분리 방지 (`대법원은 "...인정한다." 라고 판결했다.` 등)
 
 메타 보존: chunk_idx · doc_id · page · section_title · char_range · bbox · metadata
 """
@@ -112,8 +113,16 @@ def _split_by_sentence(text: str) -> list[str]:
         if not sent:
             continue
         if current and len(current) + len(sent) + 1 > _TARGET_SIZE:
-            pieces.append(current.strip())
-            current = sent
+            # W5 4.3 — current 가 odd-count 따옴표/괄호 이면 다음 sent 흡수해서 짝 맞춤.
+            #   _MAX_SIZE 위반 시 fallback (강제 cut)
+            if (
+                _is_unbalanced_quote_or_paren(current)
+                and len(current) + len(sent) + 1 <= _MAX_SIZE
+            ):
+                current = f"{current} {sent}".strip()
+            else:
+                pieces.append(current.strip())
+                current = sent
         else:
             current = f"{current} {sent}".strip() if current else sent
     if current:
@@ -158,6 +167,37 @@ def _restore_legal_dates(text: str, matches: list[str]) -> str:
         re.escape(_LEGAL_DATE_PLACEHOLDER) + r"(\d+)" + re.escape(_LEGAL_DATE_PLACEHOLDER)
     )
     return pattern.sub(lambda m: matches[int(m.group(1))], text)
+
+
+def _is_unbalanced_quote_or_paren(text: str) -> bool:
+    """청크 끝이 인용문/괄호 중간인지 검사 (W5 4.3 따옴표/괄호 보호).
+
+    검사 대상:
+    - `"` (ASCII double quote) 갯수가 홀수
+    - `(`/`[`/`{`/`「`/`『` 갯수 > `)`/`]`/`}`/`」`/`』` 갯수
+    - `'` (single quote) 는 apostrophe 와 구분 어려움 → skip
+    - 한국어 따옴표 `"` `"` `'` `'` 는 여는/닫는 짝이 명확해 갯수 비교 가능
+    """
+    # double quote (ASCII)
+    if text.count('"') % 2 == 1:
+        return True
+    # 한국어 인용 따옴표 (여는/닫는 명시)
+    if text.count("\u201c") > text.count("\u201d"):  # " > "
+        return True
+    if text.count("\u2018") > text.count("\u2019"):  # ' > '
+        return True
+    # 괄호 짝
+    pairs = [
+        ("(", ")"),
+        ("[", "]"),
+        ("{", "}"),
+        ("\u300c", "\u300d"),  # 「 」
+        ("\u300e", "\u300f"),  # 『 』
+    ]
+    for opener, closer in pairs:
+        if text.count(opener) > text.count(closer):
+            return True
+    return False
 
 
 def _apply_overlap(pieces: list[str]) -> list[str]:

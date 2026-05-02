@@ -173,6 +173,10 @@ class ThreadSafetyTest(EmbedCacheBaseTest):
 
         OrderedDict 는 GIL 외 race 가 없어 단순 access 는 안전하지만,
         `move_to_end` + `popitem` 동시 진행은 race 가능. Lock 으로 보호 검증.
+
+        W5 mock 보강 (W4 Day 2 P3 flaky 해소): patch 를 worker 안이 아닌 단일
+        with 블록으로 래핑해 thread 간 patch race 차단. 이전엔 worker 별 patch 가
+        thread 간섭 + 워밍업 전 실제 HTTP 호출 가능성 → 401 cold path race.
         """
         from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
 
@@ -186,23 +190,24 @@ class ThreadSafetyTest(EmbedCacheBaseTest):
         def worker(idx: int) -> None:
             try:
                 # 10 종 query 가 4 worker 각 100회 → 총 4000 호출, 빈번 hit + eviction.
-                with patch.object(
-                    provider._client,
-                    "post",
-                    return_value=_make_dense_response(seed=float(idx % 10)),
-                ):
-                    for i in range(100):
-                        q = f"query-{i % 10}"
-                        provider.embed_query(q)
+                for i in range(100):
+                    q = f"query-{i % 10}"
+                    provider.embed_query(q)
             except BaseException as exc:
                 with lock:
                     errors.append(exc)
 
         try:
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                futures = [pool.submit(worker, i) for i in range(4)]
-                for f in futures:
-                    f.result()
+            # patch 를 단일 with 로 — worker 시작 전에 patch 적용, 모든 thread 가 mock 사용.
+            with patch.object(
+                provider._client,
+                "post",
+                return_value=_make_dense_response(seed=1.0),
+            ):
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    futures = [pool.submit(worker, i) for i in range(4)]
+                    for f in futures:
+                        f.result()
         finally:
             provider.clear_embed_cache()
             provider._embed_cache_maxsize = 512

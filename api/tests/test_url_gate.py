@@ -68,6 +68,31 @@ class DirectIpInputTest(unittest.TestCase):
                 self.assertFalse(safe, f"사설 IP {ip} 통과")
                 self.assertIn("private", reason.lower())
 
+    def test_ipv6_loopback_blocked(self) -> None:
+        """W3 P3 D-4 — IPv6 loopback (::1) 명시 차단 검증.
+
+        ipaddress 표준 라이브러리의 IPv6Address('::1').is_loopback == True.
+        url_gate 가 ::1 을 blocked_name 또는 loopback 분류 둘 중 하나로 차단해야 함.
+        """
+        from app.routers._url_gate import validate_url_safety
+
+        safe, reason, _ = validate_url_safety("http://[::1]/path")
+        self.assertFalse(safe, "IPv6 loopback 통과")
+        # blocked_name (`::1` 직접 매칭) 또는 loopback (IP 분류) 둘 다 허용
+        reason_lower = reason.lower()
+        self.assertTrue(
+            "loopback" in reason_lower or "::1" in reason_lower
+            or "내부 호스트" in reason,
+            f"IPv6 loopback 차단 사유 부적절: {reason}",
+        )
+
+    def test_ipv6_link_local_blocked(self) -> None:
+        """W3 P3 D-4 — IPv6 link-local (fe80::/10) 차단."""
+        from app.routers._url_gate import validate_url_safety
+
+        safe, reason, _ = validate_url_safety("http://[fe80::1]/")
+        self.assertFalse(safe, "IPv6 link-local 통과")
+
     def test_link_local_metadata_ip_blocked(self) -> None:
         """169.254.169.254 — AWS/GCP 메타데이터 endpoint.
 

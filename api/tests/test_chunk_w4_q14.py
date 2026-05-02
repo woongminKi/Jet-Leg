@@ -212,6 +212,76 @@ class OverlapTest(unittest.TestCase):
 
 
 # =====================================================================
+# W5 4.3 — 따옴표/괄호 보호
+# =====================================================================
+
+
+class QuoteParenProtectionTest(unittest.TestCase):
+    """W5 4.3 — 청크 경계가 odd-count 따옴표/괄호 이면 다음 짝까지 확장."""
+
+    def test_unbalanced_double_quote_detected(self) -> None:
+        from app.ingest.stages.chunk import _is_unbalanced_quote_or_paren
+
+        self.assertTrue(_is_unbalanced_quote_or_paren('대법원은 "공사대금'))
+        self.assertFalse(_is_unbalanced_quote_or_paren('대법원은 "공사대금 인정한다."'))
+
+    def test_unbalanced_paren_detected(self) -> None:
+        from app.ingest.stages.chunk import _is_unbalanced_quote_or_paren
+
+        self.assertTrue(_is_unbalanced_quote_or_paren('이는 (예외 사항'))
+        self.assertFalse(_is_unbalanced_quote_or_paren('이는 (예외 사항)'))
+
+    def test_unbalanced_korean_bracket_detected(self) -> None:
+        """「 」 한국어 대괄호 짝."""
+        from app.ingest.stages.chunk import _is_unbalanced_quote_or_paren
+
+        self.assertTrue(_is_unbalanced_quote_or_paren("「인용문"))
+        self.assertFalse(_is_unbalanced_quote_or_paren("「인용문」"))
+
+    def test_balanced_text_passes(self) -> None:
+        from app.ingest.stages.chunk import _is_unbalanced_quote_or_paren
+
+        self.assertFalse(_is_unbalanced_quote_or_paren("일반 한국어 본문이다."))
+
+    def test_split_protects_quoted_sentence(self) -> None:
+        """긴 인용문이 청크 중간에 split 되지 않고 보호됨."""
+        from app.ingest.stages.chunk import _split_by_sentence
+
+        # _TARGET_SIZE 근처에서 인용문이 끝나도록 구성
+        prefix = "이전 본문이다. " * 50  # ≈ 450 chars
+        quoted = '대법원은 "이 사안에서 공사대금 합의해지를 인정한다. 따라서 채무는 소멸한다." 라고 판결했다.'
+        text = prefix + quoted + " 추가 본문이다."
+        pieces = _split_by_sentence(text)
+        # 인용문이 포함된 청크는 dquote 짝수여야 함 (전체 인용문이 한 청크에)
+        for p in pieces:
+            if '"' in p:
+                # 첫 piece 만 검사 — 인용문이 전체 포함된 청크
+                # (overlap prefix 로 인한 두번째 piece 의 dquote 는 trade-off 수용)
+                if "공사대금" in p and "라고 판결" in p:
+                    self.assertEqual(
+                        p.count('"') % 2, 0,
+                        f"인용문이 split 됨 (dquote 홀수): {p[:200]}"
+                    )
+                    return
+        # 인용문이 한 청크에 완전 포함된 케이스 없으면 fail (4.3 미작동)
+        self.fail("인용문이 단일 청크에 보존 안 됨")
+
+    def test_max_size_fallback_on_unbalanced(self) -> None:
+        """unbalanced 이지만 _MAX_SIZE 위반 위험 → fallback (강제 cut)."""
+        from app.ingest.stages.chunk import _MAX_SIZE, _split_by_sentence
+
+        # 매우 긴 텍스트 + 끝나지 않는 인용문 → _MAX_SIZE 위반 직전 강제 cut
+        text = '"열린 인용문 시작 ' + ('가나다라마 ' * 200) + '닫지 않는 인용.'
+        pieces = _split_by_sentence(text)
+        # 모든 청크가 _MAX_SIZE 이하
+        for p in pieces:
+            self.assertLessEqual(
+                len(p), _MAX_SIZE,
+                f"청크 길이 {len(p)} > _MAX_SIZE (4.3 fallback 미작동)"
+            )
+
+
+# =====================================================================
 # 4.5 — section_title 우선순위 swap
 # =====================================================================
 
