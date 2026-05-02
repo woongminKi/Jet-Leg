@@ -11,12 +11,22 @@ interface SearchSubheaderProps {
   initialQuery: string;
   total: number;
   tookMs: number;
+  /** W7 Day 1 — 검색 경로 진단 (선택, backward compat). dense/sparse hits + fallback 표시. */
+  queryParsed?: {
+    has_dense: boolean;
+    has_sparse: boolean;
+    dense_hits: number;
+    sparse_hits: number;
+    fused: number;
+    fallback_reason?: string | null;
+  };
 }
 
 export function SearchSubheader({
   initialQuery,
   total,
   tookMs,
+  queryParsed,
 }: SearchSubheaderProps) {
   const router = useRouter();
   const [query, setQuery] = useState(initialQuery);
@@ -56,6 +66,34 @@ export function SearchSubheader({
         <Badge variant="secondary" className="hidden whitespace-nowrap sm:inline-flex">
           {total}개 결과 · {(tookMs / 1000).toFixed(2)}초
         </Badge>
+        {queryParsed && (
+          <div
+            className="hidden items-center gap-1 md:inline-flex"
+            title={
+              queryParsed.fallback_reason
+                ? `fallback: ${queryParsed.fallback_reason}`
+                : `dense ${queryParsed.dense_hits} · sparse ${queryParsed.sparse_hits} → fused ${queryParsed.fused}`
+            }
+          >
+            <Badge
+              variant={queryParsed.has_dense ? 'outline' : 'destructive'}
+              className="h-5 px-1.5 text-[10px]"
+            >
+              dense {queryParsed.dense_hits}
+            </Badge>
+            <Badge
+              variant={queryParsed.has_sparse ? 'outline' : 'secondary'}
+              className="h-5 px-1.5 text-[10px]"
+            >
+              sparse {queryParsed.sparse_hits}
+            </Badge>
+            {queryParsed.fallback_reason && (
+              <Badge variant="destructive" className="h-5 px-1.5 text-[10px]">
+                {queryParsed.fallback_reason}
+              </Badge>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

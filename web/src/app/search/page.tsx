@@ -30,6 +30,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
         initialQuery={query}
         total={response.total}
         tookMs={response.took_ms}
+        queryParsed={response.query_parsed}
       />
       <div className="container mx-auto px-4 py-6 md:px-6">
         <div className="grid gap-6 lg:grid-cols-[260px_1fr]">

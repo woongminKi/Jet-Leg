@@ -105,6 +105,10 @@ export interface MatchedChunk {
   page: number | null;
   section_title: string | null;
   highlight: Array<[number, number]>;
+  /** W6 Day 5 — RRF score (검색 ranking 근거). null = backward compat */
+  rrf_score?: number | null;
+  /** W6 Day 5 — chunk metadata (overlap_with_prev_chunk_idx 등) */
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface SearchHit {
