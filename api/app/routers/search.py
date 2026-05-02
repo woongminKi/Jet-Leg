@@ -153,8 +153,14 @@ def search(
     # ------------------------------------------------------------------
     dense_vec: list[float] | None = None
     fallback_reason: str | None = None
+    embed_cache_hit: bool = False
     try:
-        dense_vec = get_bgem3_provider().embed_query(clean_q)
+        provider = get_bgem3_provider()
+        dense_vec = provider.embed_query(clean_q)
+        # W4-Q-3 — embed_query 직후 LRU hit 여부 스냅샷.
+        # race condition 한계 (provider 의 docstring 참조): 멀티 스레드 환경에서
+        # 타 호출자가 사이에 끼어들면 hit/miss 가 뒤바뀌어 보일 수 있음. 메트릭 비율 측정 용도라 수용.
+        embed_cache_hit = bool(getattr(provider, "_last_cache_hit", False))
     except Exception as exc:  # noqa: BLE001
         if is_transient_hf_error(exc):
             fallback_reason = "transient_5xx"
@@ -174,6 +180,7 @@ def search(
                 fused=0,
                 has_dense=False,
                 fallback_reason="permanent_4xx",
+                embed_cache_hit=False,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -219,6 +226,7 @@ def search(
             fused=0,
             has_dense=dense_vec is not None,
             fallback_reason=fallback_reason,
+            embed_cache_hit=embed_cache_hit,
         )
         return SearchResponse(
             query=clean_q,
@@ -285,6 +293,7 @@ def search(
             fused=len(rpc_rows),
             has_dense=dense_vec is not None,
             fallback_reason=fallback_reason,
+            embed_cache_hit=embed_cache_hit,
         )
         return SearchResponse(
             query=clean_q,
@@ -377,6 +386,7 @@ def search(
         fused=len(rpc_rows),
         has_dense=dense_vec is not None,
         fallback_reason=fallback_reason,
+        embed_cache_hit=embed_cache_hit,
     )
     return SearchResponse(
         query=clean_q,

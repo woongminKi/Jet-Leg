@@ -71,6 +71,10 @@ class SearchSloStats(BaseModel):
       - transient_5xx: HF API 일시 오류 → sparse-only fallback (200 응답)
       - permanent_4xx: HF API 영구 오류 → 503 raise (가시성 위해 record)
       - none: dense path 정상
+
+    W4-Q-3 신규:
+      - cache_hit_count: `embed_query` LRU hit 횟수 (전체 샘플 중)
+      - cache_hit_rate: hit 비율 (0.0 ~ 1.0). sample 0건이면 None
     """
     p50_ms: int | None
     p95_ms: int | None
@@ -80,6 +84,8 @@ class SearchSloStats(BaseModel):
     avg_fused: float | None
     fallback_count: int
     fallback_breakdown: dict[str, int]
+    cache_hit_count: int = 0
+    cache_hit_rate: float | None = None
 
 
 class StatsResponse(BaseModel):

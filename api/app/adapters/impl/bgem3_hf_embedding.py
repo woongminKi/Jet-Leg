@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
+from collections import OrderedDict
 from functools import lru_cache
 from typing import Callable, TypeVar
 
@@ -33,6 +35,10 @@ _MAX_ATTEMPTS = 3
 _BASE_BACKOFF_SECONDS = 5.0  # BGE-M3 cold start 5~20s 가 흔함
 _REQUEST_TIMEOUT = 60.0
 
+# W4-Q-3 — embedding cache (in-process LRU, 의존성 0).
+# 페르소나 A 일일 쿼리 ~30건 × 2주 윈도우 가정. 메모리 ≈ 512 × 1024 × 8B = 4MB.
+_EMBED_CACHE_MAXSIZE = 512
+
 T = TypeVar("T")
 
 
@@ -49,6 +55,15 @@ class BGEM3HFEmbeddingProvider:
             )
         self._headers = {"Authorization": f"Bearer {settings.hf_api_token}"}
         self._client = httpx.Client(timeout=_REQUEST_TIMEOUT)
+        # W4-Q-3 — `embed_query` 전용 LRU. `OrderedDict` 의 `move_to_end` 로 MRU 갱신,
+        # 초과 시 `popitem(last=False)` 로 LRU eviction. 동시성 보호 위해 Lock.
+        # cache key = text 단독 (model_id `BAAI/bge-m3` 모듈 상수 — 향후 config 화 시 키에 포함 필요).
+        self._embed_cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._embed_cache_lock = threading.Lock()
+        self._embed_cache_maxsize = _EMBED_CACHE_MAXSIZE
+        # 직전 `embed_query` 호출의 cache hit 여부 노출 (search.py 의 메트릭 기록용).
+        # 멀티 스레드 환경에서 마지막 writer 가 덮어쓰므로 정확성은 보장 안 함 — 전체 비율은 신뢰 가능.
+        self._last_cache_hit: bool = False
 
     # ---------------------- public API ----------------------
 
@@ -68,7 +83,34 @@ class BGEM3HFEmbeddingProvider:
         W3 §3.A 하이브리드 검색의 dense 입력. `embed()` 와 동일 호출이지만
         sparse 미사용이라 `EmbeddingResult` 래핑을 생략, list[float] 직접 반환.
         chunks 인덱싱과 같은 모델·endpoint 사용 (검색-인덱싱 일관성).
+
+        **W4-Q-3 LRU cache** — 동일 text 재호출 시 HF API 호출 0회.
+        cache hit 여부는 `self._last_cache_hit` 로 노출 (멀티 스레드 환경에선
+        전체 비율만 신뢰 가능). caller 가 vector 를 mutate 해도 cache 보존되도록
+        defensive copy 반환.
+
+        `embed()` / `embed_batch()` 는 인제스트 경로 — 동일 text 재호출 가능성 0
+        이라 cache 미부착.
         """
+        with self._embed_cache_lock:
+            cached = self._embed_cache.get(text)
+            if cached is not None:
+                self._embed_cache.move_to_end(text)  # MRU 갱신
+                self._last_cache_hit = True
+                return list(cached)  # caller mutation 방어
+
+        self._last_cache_hit = False
+        result = self._embed_query_uncached(text)
+
+        with self._embed_cache_lock:
+            self._embed_cache[text] = list(result)
+            while len(self._embed_cache) > self._embed_cache_maxsize:
+                self._embed_cache.popitem(last=False)  # LRU eviction
+
+        return result
+
+    def _embed_query_uncached(self, text: str) -> list[float]:
+        """HF API 직호출 (retry 포함) — cache miss 경로."""
         def call() -> list[float]:
             resp = self._client.post(
                 _URL, headers=self._headers, json={"inputs": text}
@@ -76,6 +118,12 @@ class BGEM3HFEmbeddingProvider:
             return _parse_single_response(resp)
 
         return _with_retry(call, label="bge-m3.embed_query")
+
+    def clear_embed_cache(self) -> None:
+        """테스트 전용 — `embed_query` LRU 비움. 운영 코드에서 호출하지 말 것."""
+        with self._embed_cache_lock:
+            self._embed_cache.clear()
+            self._last_cache_hit = False
 
     def embed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
         if not texts:

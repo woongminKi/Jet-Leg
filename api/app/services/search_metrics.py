@@ -44,6 +44,7 @@ def record_search(
     fused: int,
     has_dense: bool,
     fallback_reason: str | None,
+    embed_cache_hit: bool = False,
 ) -> None:
     """`/search` 1회 처리 결과를 ring buffer 에 적재.
 
@@ -53,6 +54,11 @@ def record_search(
         - None: dense path 정상 — sparse-only fallback 미진입
         - "transient_5xx": HF API transient 실패 → sparse-only fallback 으로 200 응답
         - "permanent_4xx": HF API 영구 실패 → 503 raise 예정 (가시성 위해 record 만)
+
+    `embed_cache_hit`: W4-Q-3 — `embed_query` LRU 의 hit 여부.
+        - True: 동일 query 재호출이라 HF API 호출 0회 (warm path)
+        - False: cache miss (cold) 또는 fallback 진입 (dense path 미실행)
+        - default False: 503 raise 분기 등 backward compat 안전값.
     """
     event = {
         "took_ms": int(took_ms),
@@ -61,6 +67,7 @@ def record_search(
         "fused": int(fused),
         "has_dense": bool(has_dense),
         "fallback_reason": fallback_reason,
+        "embed_cache_hit": bool(embed_cache_hit),
     }
     with _lock:
         _ring.append(event)
@@ -89,6 +96,8 @@ def get_search_slo() -> dict:
             "avg_fused": None,
             "fallback_count": 0,
             "fallback_breakdown": fallback_breakdown,
+            "cache_hit_count": 0,
+            "cache_hit_rate": None,
         }
 
     took_samples = sorted(e["took_ms"] for e in snapshot)
@@ -107,6 +116,10 @@ def get_search_slo() -> dict:
         fallback_breakdown[key] = int(reasons.get(key, 0))
     fallback_count = sum(fallback_breakdown[key] for key in _FALLBACK_VALUES)
 
+    # W4-Q-3 — `embed_query` LRU cache hit 비율. backward compat: 키 없는 옛 이벤트는 False 간주.
+    cache_hit_count = sum(1 for e in snapshot if e.get("embed_cache_hit"))
+    cache_hit_rate = round(cache_hit_count / sample_count, 4)
+
     return {
         "p50_ms": p50,
         "p95_ms": p95,
@@ -116,6 +129,8 @@ def get_search_slo() -> dict:
         "avg_fused": avg_fused,
         "fallback_count": fallback_count,
         "fallback_breakdown": fallback_breakdown,
+        "cache_hit_count": cache_hit_count,
+        "cache_hit_rate": cache_hit_rate,
     }
 
 
