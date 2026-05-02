@@ -20,6 +20,7 @@ from typing import Any
 
 import fitz  # PyMuPDF — 스캔 PDF rerouting 시 페이지를 PNG 로 렌더
 
+from app.adapters.impl.docx_parser import DocxParser
 from app.adapters.impl.hwp_parser import Hwp5Parser
 from app.adapters.impl.hwpml_parser import HwpmlParser, is_hwpml_bytes
 from app.adapters.impl.hwpx_parser import HwpxParser
@@ -41,15 +42,17 @@ _image_parser = ImageParser()
 _url_parser = UrlParser()
 _hwp_parser = Hwp5Parser()
 _hwpml_parser = HwpmlParser()
+_docx_parser = DocxParser()
 
-# doc_type → DocumentParser 디스패처. W2 까지 PDF + HWPX + image + URL + HWP 5.x.
-# DOCX/PPTX 는 W3 이월.
+# doc_type → DocumentParser 디스패처. W5 DE-67 — DOCX 추가.
+# PPTX 는 W5 후속 (DE-68 평가 후 결정).
 _PARSERS_BY_DOC_TYPE: dict[str, DocumentParser] = {
     "pdf": _pdf_parser,
     "hwpx": _hwpx_parser,
     "image": _image_parser,
     "url": _url_parser,
     "hwp": _hwp_parser,
+    "docx": _docx_parser,
 }
 
 # 스캔 PDF 감지 임계값 — PyMuPDFParser raw_text 가 이 이하면 텍스트 레이어 부재로 간주
