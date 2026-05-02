@@ -24,6 +24,7 @@ doc_type 정책
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from pathlib import PurePosixPath
 
@@ -33,6 +34,13 @@ logger = logging.getLogger(__name__)
 
 _HWPML_ROOT = "HWPML"
 _SNIFF_BYTES = 4096
+
+# heading 판별 — HWPX 와 동일한 텍스트 inline 패턴 (HWPML 은 Style 매핑 복잡도 vs 효과
+# trade-off 로 텍스트 패턴만 사용. 자산 빈도 낮음 — Day 5 기준 0건).
+_HEADING_TEXT_PATTERN = re.compile(
+    r"^(제\s*\d+\s*[조항장절편관]|부칙|별표\s*\d*|별첨\s*\d*)([\s(].*)?$"
+)
+_HEADING_TEXT_MAX_LEN = 80
 
 
 def is_hwpml_bytes(head: bytes) -> bool:
@@ -77,7 +85,9 @@ class HwpmlParser:
         for body in root.iter("BODY"):
             for section in body.iter("SECTION"):
                 section_idx = section.get("Id")
-                section_title = f"section {section_idx}" if section_idx else None
+                # sticky propagate — heading 단락 만나면 갱신, 그 이전은 fallback (section idx)
+                fallback_title = f"section {section_idx}" if section_idx else None
+                current_title: str | None = None
                 for p in section.iter("P"):
                     # leaf P 만 — nested P 가 있으면 outer 는 컨테이너로 보고 skip
                     # (자식 P 가 자기 텍스트를 별도 단락으로 가져감 → 중복 회피)
@@ -86,11 +96,16 @@ class HwpmlParser:
                     text = _collect_paragraph_text(p)
                     if not text:
                         continue
+                    if (
+                        len(text) <= _HEADING_TEXT_MAX_LEN
+                        and _HEADING_TEXT_PATTERN.match(text)
+                    ):
+                        current_title = text
                     sections.append(
                         ExtractedSection(
                             text=text,
                             page=None,  # HWPML 은 page 개념 없음
-                            section_title=section_title,
+                            section_title=current_title or fallback_title,
                             bbox=None,
                         )
                     )
