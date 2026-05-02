@@ -88,9 +88,24 @@ class SearchSloStats(BaseModel):
     cache_hit_rate: float | None = None
 
 
+class ChunksStats(BaseModel):
+    """W7 Day 3 — chunks 단위 가시성 (DE-65 후 1256 환경 + chunk_filter 마킹 추적).
+
+    - total: 전체 chunks 수
+    - effective: 검색 대상 (flags.filtered_reason IS NULL)
+    - filtered_breakdown: 마킹 사유별 카운트 (table_noise · header_footer · empty · extreme_short)
+    - filtered_ratio: 마킹 비율 (0.0 ~ 1.0)
+    """
+    total: int
+    effective: int
+    filtered_breakdown: dict[str, int]
+    filtered_ratio: float
+
+
 class StatsResponse(BaseModel):
     documents: DocumentsStats
-    chunks_total: int
+    chunks_total: int  # backward compatible — chunks.total 과 동일
+    chunks: ChunksStats  # W7 Day 3 신규
     jobs: JobsStats
     popular_tags: list[TagCount]  # 사용 빈도 top-10
     slo_buckets: dict[str, SloBucketStats]  # W2 §3.A: pdf_50p · image · pdf_scan · hwp · url
@@ -156,6 +171,7 @@ def stats() -> StatsResponse:
     # ---- chunks ----
     chunks_resp = supabase.table("chunks").select("id", count="exact").execute()
     chunks_total = chunks_resp.count or 0
+    chunks_stats = _compute_chunks_stats(supabase, chunks_total)
 
     # ---- jobs ----
     jobs = (
@@ -198,6 +214,7 @@ def stats() -> StatsResponse:
             failed_count=failed_count,
         ),
         chunks_total=chunks_total,
+        chunks=chunks_stats,
         jobs=JobsStats(
             total=len(jobs),
             by_status=by_status,
@@ -211,6 +228,41 @@ def stats() -> StatsResponse:
 
 
 # ---------------------- helpers ----------------------
+
+
+def _compute_chunks_stats(supabase, chunks_total: int) -> ChunksStats:
+    """W7 Day 3 — chunks_filter 마킹 분포 가시성.
+
+    DE-65 본 적용 후 chunks 1256 환경에서 effective vs filtered 비율 추적용.
+    PostgREST `flags->>'filtered_reason'` JSONB path query 사용.
+    """
+    # filtered (filtered_reason IS NOT NULL) 카운트 — JSONB path 활용
+    filtered_resp = (
+        supabase.table("chunks")
+        .select("flags", count="exact")
+        .not_.is_("flags->>filtered_reason", "null")
+        .execute()
+    )
+    filtered_rows = filtered_resp.data or []
+    filtered_total = filtered_resp.count or 0
+
+    # 사유별 카운트 — 페이지네이션 없이 가져온 flags 만 집계
+    # (chunks 가 매우 커지면 별도 RPC 권장. 현재 1256 환경에서는 OK)
+    breakdown: dict[str, int] = {}
+    for r in filtered_rows:
+        flags = r.get("flags") or {}
+        reason = flags.get("filtered_reason")
+        if reason:
+            breakdown[reason] = breakdown.get(reason, 0) + 1
+
+    effective = chunks_total - filtered_total
+    ratio = filtered_total / chunks_total if chunks_total else 0.0
+    return ChunksStats(
+        total=chunks_total,
+        effective=effective,
+        filtered_breakdown=breakdown,
+        filtered_ratio=round(ratio, 4),
+    )
 
 
 def _compute_slo_buckets(docs: list[dict]) -> dict[str, SloBucketStats]:
