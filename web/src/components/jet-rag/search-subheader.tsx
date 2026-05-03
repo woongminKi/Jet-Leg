@@ -154,10 +154,12 @@ export function SearchSubheader({
         )}
         {/* W14 Day 1·4 — ablation mode 3-state 토글
             Day 1: md+ 만 노출
-            Day 4 (한계 #78): mobile 도 노출 — 좁은 폭은 폰트/패딩 축소로 대응 */}
+            Day 4 (한계 #78): mobile 도 노출 — 좁은 폭은 폰트/패딩 축소로 대응
+            W19 Day 4 (#78 follow-up): mobile 폰트 9→10.5 + 패딩 미세 조정으로 가독성↑ */}
         <div
-          className="inline-flex h-6 items-center rounded-md border border-border bg-card md:h-7"
+          className="inline-flex h-7 items-center rounded-md border border-border bg-card"
           title="ablation 모드 — hybrid (기본) / dense / sparse 비교"
+          aria-busy={isPending}
         >
           {(['hybrid', 'dense', 'sparse'] as const).map((m) => (
             <button
@@ -167,8 +169,8 @@ export function SearchSubheader({
               disabled={isPending}
               className={
                 mode === m
-                  ? 'h-full rounded-sm bg-primary px-1.5 text-[9px] font-semibold text-primary-foreground transition-opacity disabled:opacity-50 md:px-2 md:text-[10px]'
-                  : 'h-full px-1.5 text-[9px] text-muted-foreground transition-opacity hover:text-foreground disabled:opacity-50 md:px-2 md:text-[10px]'
+                  ? 'h-full rounded-sm bg-primary px-2 text-[10.5px] font-semibold text-primary-foreground transition-opacity disabled:opacity-50 md:text-[11px]'
+                  : 'h-full px-2 text-[10.5px] text-muted-foreground transition-opacity hover:text-foreground disabled:opacity-50 md:text-[11px]'
               }
               aria-pressed={mode === m}
             >
