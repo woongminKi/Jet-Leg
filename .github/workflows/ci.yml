@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 같은 ref 의 동시 실행 cancel — push 연속 시 자원 절약.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-test:
+    name: api · 195+ unittest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: api
+    env:
+      # 단위 테스트는 모두 mock.patch 기반 — 실 API 호출 0.
+      # HF_API_TOKEN 만 dummy setdefault (embed_cache 등 import 단계에서 체크).
+      # SUPABASE_URL/KEY 는 의도적으로 미설정 (세팅 시 _has_supabase_env() 가
+      # 진짜 호출 시도하여 ConnectError — W7 Day 5 senior-developer 발견 사례).
+      HF_API_TOKEN: dummy-test-token-ci
+      GEMINI_API_KEY: dummy-test-token-ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: uv sync
+        run: uv sync --frozen
+      - name: unittest discover
+        run: uv run python -m unittest discover tests
+
+  web-check:
+    name: web · tsc + lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+      - name: tsc --noEmit
+        run: pnpm exec tsc --noEmit
+      - name: eslint
+        run: pnpm lint
