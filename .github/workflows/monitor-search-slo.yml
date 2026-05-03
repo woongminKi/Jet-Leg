@@ -1,0 +1,64 @@
+name: monitor search SLO
+
+# 외부 배포 backend (Railway / Render 등) 의 /stats.search_slo 를
+# 주기적으로 fetch 해 work-log 에 markdown snapshot 누적.
+#
+# 사용법 (사용자 액션 필요):
+#   1. GitHub repo Settings → Secrets → JET_RAG_API_BASE 추가
+#      (예: https://jet-rag-api.up.railway.app)
+#   2. Settings → Actions → Workflow permissions: Read and write 활성
+#      (PR 생성 또는 commit 위해)
+#   3. 아래 schedule 의 주석 해제 (기본 매일 02:00 UTC = 11:00 KST)
+#   4. 또는 수동 실행: Actions 탭 → "monitor search SLO" → "Run workflow"
+#
+# secrets 미설정 시: workflow 가 실패하지만 다른 CI 영향 X (별도 workflow).
+
+on:
+  workflow_dispatch:
+    inputs:
+      warmup:
+        description: "golden 쿼리 8건으로 ring buffer warm 후 측정 (기본 false — 단순 snapshot)"
+        type: boolean
+        default: false
+  # schedule:
+  #   - cron: "0 2 * * *"  # 매일 02:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    name: snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ vars.JET_RAG_API_BASE != '' || secrets.JET_RAG_API_BASE != '' }}
+    env:
+      JET_RAG_API_BASE: ${{ secrets.JET_RAG_API_BASE || vars.JET_RAG_API_BASE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: uv sync (api dir)
+        working-directory: api
+        run: uv sync --frozen
+      - name: monitor snapshot
+        working-directory: api
+        run: |
+          if [ "${{ inputs.warmup }}" = "true" ]; then
+            uv run python scripts/monitor_search_slo.py --warmup
+          else
+            uv run python scripts/monitor_search_slo.py
+          fi
+      - name: Upload snapshot artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-slo-snapshot-${{ github.run_id }}
+          path: |
+            work-log/*search_slo*.md
+            work-log/*monitor*.md
+          if-no-files-found: ignore
+          retention-days: 30

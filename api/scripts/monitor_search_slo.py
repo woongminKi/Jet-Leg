@@ -19,12 +19,15 @@ import json
 import statistics
 import sys
 import time
+import os
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-_BASE = "http://localhost:8000"
+# W14 Day 2 — 외부 배포 backend (Railway 등) 가리키도록 env 지원.
+# CI / cron 에서 `JET_RAG_API_BASE=https://api.example.com` 으로 override.
+_BASE = os.environ.get("JET_RAG_API_BASE", "http://localhost:8000").rstrip("/")
 
 
 def _fetch_stats() -> dict:
