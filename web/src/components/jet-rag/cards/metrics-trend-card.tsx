@@ -38,9 +38,13 @@ export function MetricsTrendCard({
   const [fetchedTrend, setFetchedTrend] = useState<TrendResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // W20 Day 3 — fetch error 재시도 토큰. 변경 시 useEffect 재실행 (현재 range/mode 그대로).
+  const [retryToken, setRetryToken] = useState(0);
 
   // (range, mode) 가 initialTrend 와 일치 하는지 — fetch 생략 조건.
+  // retryToken > 0 (재시도 진행 중) 이면 SSR 데이터 무관 강제 fetch.
   const isInitialQuery =
+    retryToken === 0 &&
     range === initialTrend.range &&
     (metric !== 'search' || mode === (initialTrend.mode ?? 'all'));
 
@@ -67,7 +71,13 @@ export function MetricsTrendCard({
     return () => {
       cancelled = true;
     };
-  }, [range, metric, mode, isInitialQuery]);
+  }, [range, metric, mode, isInitialQuery, retryToken]);
+
+  const handleRetry = () => {
+    setFetchError(null);
+    setIsLoading(true);
+    setRetryToken((n) => n + 1);
+  };
 
   const handleRangeChange = (next: TrendRange) => {
     if (next === range) return;
@@ -148,7 +158,17 @@ export function MetricsTrendCard({
       </CardHeader>
       <CardContent className="space-y-3">
         {fetchError ? (
-          <p className="text-sm text-destructive">{fetchError}</p>
+          <div className="space-y-2">
+            <p className="text-sm text-destructive">{fetchError}</p>
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={isLoading}
+              className="rounded border border-border bg-background/40 px-2 py-1 text-xs text-foreground hover:bg-foreground/5 disabled:opacity-50"
+            >
+              다시 시도
+            </button>
+          </div>
         ) : trend === null ? (
           <p className="text-sm text-muted-foreground">데이터 불러오는 중…</p>
         ) : errorCode === 'migrations_pending' ? (
