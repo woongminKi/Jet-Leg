@@ -90,6 +90,7 @@ class SearchSloStats(BaseModel):
 
 class VisionUsageStats(BaseModel):
     """W8 Day 4 — Vision API 호출 누적 카운트 (한계 #29).
+    W11 Day 1 — last_quota_exhausted_at 추가 (한계 #38 lite).
 
     in-memory counter (vision_metrics 모듈) 의 스냅샷. 프로세스 재시작 시 휘발.
     Gemini Flash RPD 20 무료 티어 cap 모니터링 기준.
@@ -98,6 +99,7 @@ class VisionUsageStats(BaseModel):
     success_calls: int
     error_calls: int
     last_called_at: str | None
+    last_quota_exhausted_at: str | None = None
 
 
 class ChunksStats(BaseModel):

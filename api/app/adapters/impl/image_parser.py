@@ -29,6 +29,7 @@ from app.adapters.impl.gemini_vision import GeminiVisionCaptioner
 from app.adapters.parser import ExtractedSection, ExtractionResult
 from app.adapters.vision import VisionCaptioner
 from app.services import vision_metrics
+from app.services.quota import is_quota_exhausted
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +72,16 @@ class ImageParser:
             warnings.extend(norm_warnings)
 
         # W8 Day 4 — Vision 호출 카운트 (한계 #29). raise 도 error 로 기록 후 재 raise.
+        # W11 Day 1 — quota 시점 추적 (한계 #38 lite) — fast-fail 시점만 정확 capture.
         try:
             caption = self._captioner.caption(
                 normalized_bytes, mime_type=normalized_mime
             )
-        except Exception:
-            vision_metrics.record_call(success=False)
+        except Exception as exc:
+            vision_metrics.record_call(
+                success=False,
+                quota_exhausted=is_quota_exhausted(exc),
+            )
             raise
         vision_metrics.record_call(success=True)
 

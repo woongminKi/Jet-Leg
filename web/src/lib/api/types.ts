@@ -88,6 +88,7 @@ export interface ChunksStats {
 }
 
 /** W8 Day 4 — Vision API 호출 누적 카운트 (Gemini Flash RPD 20 cap 모니터링).
+ *  W11 Day 1 — last_quota_exhausted_at 추가 (한계 #38 lite — fast-fail 시점만 정확 capture).
  *  in-memory counter (vision_metrics 모듈) 의 스냅샷. 프로세스 재시작 시 휘발. */
 export interface VisionUsageStats {
   total_calls: number;
@@ -95,6 +96,8 @@ export interface VisionUsageStats {
   error_calls: number;
   /** UTC ISO 8601, 미호출 시 null */
   last_called_at: string | null;
+  /** UTC ISO 8601, fast-fail (RESOURCE_EXHAUSTED / 429 / quota) 미발생 시 null */
+  last_quota_exhausted_at?: string | null;
 }
 
 export interface Stats {

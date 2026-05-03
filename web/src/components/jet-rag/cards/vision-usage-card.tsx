@@ -10,8 +10,13 @@ interface VisionUsageCardProps {
 const RPD_CAP = 20;
 
 export function VisionUsageCard({ stats }: VisionUsageCardProps) {
-  const { total_calls, success_calls, error_calls, last_called_at } =
-    stats.vision_usage;
+  const {
+    total_calls,
+    success_calls,
+    error_calls,
+    last_called_at,
+    last_quota_exhausted_at,
+  } = stats.vision_usage;
 
   // RPD 20 대비 사용량 (총 호출 기준 — 100% 초과 시 cap 표기 유지)
   const usageRatio = Math.min(1, total_calls / RPD_CAP);
@@ -79,6 +84,13 @@ export function VisionUsageCard({ stats }: VisionUsageCardProps) {
             value={formatLastCalledAt(last_called_at)}
             dotClass="bg-muted-foreground/30"
           />
+          {last_quota_exhausted_at && (
+            <Row
+              label="최근 quota 소진"
+              value={formatLastCalledAt(last_quota_exhausted_at)}
+              dotClass="bg-destructive"
+            />
+          )}
         </ul>
       </CardContent>
     </Card>
