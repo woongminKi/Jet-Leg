@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Bug, FileText, Search } from 'lucide-react';
@@ -40,6 +40,10 @@ export function SearchSubheader({
 }: SearchSubheaderProps) {
   const router = useRouter();
   const [query, setQuery] = useState(initialQuery);
+  // W19 Day 1 한계 #79 — mode 토글 빠른 클릭 race 방지.
+  // startTransition 으로 navigation 감싸 React 가 자동으로 stale transition 차단.
+  // isPending 으로 진행 중 button disabled (사용자 시각 피드백).
+  const [isPending, startTransition] = useTransition();
 
   // W14 Day 1 — URL 빌더 (모든 상태 보존). mode 만 새 값으로 override 가능.
   const buildUrl = (overrides: { q?: string; mode?: string } = {}) => {
@@ -70,7 +74,9 @@ export function SearchSubheader({
 
   const switchMode = (next: 'hybrid' | 'dense' | 'sparse') => {
     if (next === mode) return;
-    router.push(buildUrl({ mode: next }));
+    startTransition(() => {
+      router.push(buildUrl({ mode: next }));
+    });
   };
 
   return (
@@ -158,10 +164,11 @@ export function SearchSubheader({
               key={m}
               type="button"
               onClick={() => switchMode(m)}
+              disabled={isPending}
               className={
                 mode === m
-                  ? 'h-full rounded-sm bg-primary px-1.5 text-[9px] font-semibold text-primary-foreground md:px-2 md:text-[10px]'
-                  : 'h-full px-1.5 text-[9px] text-muted-foreground hover:text-foreground md:px-2 md:text-[10px]'
+                  ? 'h-full rounded-sm bg-primary px-1.5 text-[9px] font-semibold text-primary-foreground transition-opacity disabled:opacity-50 md:px-2 md:text-[10px]'
+                  : 'h-full px-1.5 text-[9px] text-muted-foreground transition-opacity hover:text-foreground disabled:opacity-50 md:px-2 md:text-[10px]'
               }
               aria-pressed={mode === m}
             >
