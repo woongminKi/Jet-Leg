@@ -72,10 +72,12 @@ class PptxParser:
 
         # W9 Day 3 — cap 정책 fix (한계 #47).
         # 이전 (Day 1·2): cap 이 *성공* 슬라이드만 카운트 → 실패 시 모든 슬라이드 시도
-        #                  → quota 초과로 10회 이상 헛 호출 케이스 발견 (W9 Day 3 PPTX reingest)
         # 현재: cap 이 *시도* 기준 → quota 보호 의도 보존
+        # W9 Day 4 — quota_exhausted fast-fail (한계 #49).
+        # Gemini API 가 RESOURCE_EXHAUSTED 반환 시 이후 슬라이드 즉시 skip → cap 호출도 절약
         vision_slides_attempted = 0
         vision_slides_success = 0
+        vision_quota_exhausted = False
 
         for slide_idx, slide in enumerate(prs.slides):
             try:
@@ -89,19 +91,26 @@ class PptxParser:
                 current_text_len = sum(len(p) for p in slide_text_parts)
                 needs_ocr = (
                     self._image_parser is not None
+                    and not vision_quota_exhausted  # W9 Day 4 fast-fail
                     and vision_slides_attempted < _MAX_VISION_SLIDES
                     and current_text_len < _VISION_AUGMENT_TEXT_THRESHOLD
                 )
                 if needs_ocr:
                     # cap 카운트는 시도 시점 — 결과 무관 (quota 보호)
                     vision_slides_attempted += 1
-                    ocr_text = _vision_ocr_largest_picture(
+                    ocr_text, quota_exhausted = _vision_ocr_largest_picture(
                         slide,
                         slide_idx=slide_idx,
                         file_name=file_name,
                         image_parser=self._image_parser,
                         warnings=warnings,
                     )
+                    if quota_exhausted:
+                        # 첫 quota 감지 직후 flag — 이후 슬라이드 skip (한계 #49)
+                        vision_quota_exhausted = True
+                        warnings.append(
+                            f"PPTX Vision quota 감지 — slide {slide_idx + 1} 이후 skip"
+                        )
                     if ocr_text:
                         vision_slides_success += 1
                         if not slide_text_parts:
@@ -241,18 +250,21 @@ def _vision_ocr_largest_picture(
     file_name: str,
     image_parser,
     warnings: list[str],
-) -> str | None:
+) -> tuple[str | None, bool]:
     """슬라이드 내 가장 큰 Picture 의 image_bytes → ImageParser.parse() 결과 OCR 텍스트.
 
     "가장 큰" 기준 — `width * height` (pptx EMU 단위, 비교용으로 충분).
     GroupShape 내부 Picture 까지 재귀 수집.
 
-    반환: OCR 텍스트 (caption section + ocr section 의 raw_text join). Picture 없거나
-    Vision 호출 실패 시 None — caller 가 빈 슬라이드로 처리.
+    반환: (text, quota_exhausted)
+    - text: OCR 텍스트 (caption section + ocr section 의 raw_text join). Picture 없거나
+      Vision 호출 실패 시 None.
+    - quota_exhausted: RESOURCE_EXHAUSTED / 429 / quota 키워드 감지 시 True (W9 Day 4 한계 #49)
+      → caller 가 이후 슬라이드 즉시 skip 가능 (cap 5회 호출도 절약)
     """
     pictures = _collect_pictures(slide.shapes)
     if not pictures:
-        return None
+        return None, False
 
     # 가장 큰 picture 1장만 — Vision 비용·시간 cap
     largest = max(pictures, key=lambda p: _picture_area(p))
@@ -262,12 +274,13 @@ def _vision_ocr_largest_picture(
         ext = (image.ext or "png").lower()
     except Exception as exc:  # noqa: BLE001
         warnings.append(f"PPTX slide {slide_idx + 1} picture blob 추출 실패: {exc}")
-        return None
+        return None, False
 
     pseudo_name = f"{file_name}#slide{slide_idx + 1}.{ext}"
     try:
         result = image_parser.parse(blob, file_name=pseudo_name)
     except Exception as exc:  # noqa: BLE001 — Vision API 실패 graceful
+        msg = str(exc)
         warnings.append(
             f"PPTX slide {slide_idx + 1} Vision OCR 실패 (graceful): {exc}"
         )
@@ -275,10 +288,29 @@ def _vision_ocr_largest_picture(
             "PPTX Vision OCR 실패 (file=%s slide=%d): %s",
             file_name, slide_idx + 1, exc,
         )
-        return None
+        # W9 Day 4 — quota 초과 감지 시 fast-fail (한계 #49)
+        if _is_quota_exhausted(msg):
+            return None, True
+        return None, False
 
     text = (result.raw_text or "").strip()
-    return text or None
+    return (text or None), False
+
+
+def _is_quota_exhausted(error_msg: str) -> bool:
+    """Gemini API 의 quota 초과 에러 메시지인지 검사 (W9 Day 4).
+
+    Gemini SDK 가 raise 하는 google.api_core.exceptions.ResourceExhausted 는
+    str() 시 "429 RESOURCE_EXHAUSTED" 또는 "quota" 포함. 보수적으로 셋 다 검사.
+    """
+    if not error_msg:
+        return False
+    upper = error_msg.upper()
+    return (
+        "RESOURCE_EXHAUSTED" in upper
+        or "429" in error_msg
+        or "QUOTA" in upper
+    )
 
 
 def _collect_pictures(shapes_iter) -> list:

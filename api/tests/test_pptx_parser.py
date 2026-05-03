@@ -373,10 +373,11 @@ class PptxVisionReroutingTest(unittest.TestCase):
 
         parse_calls: list[int] = []
 
+        # 메시지에 quota 키워드 미포함 — fast-fail (한계 #49) 분기 회피하고 cap 만 검증
         class _AlwaysFail:
             def parse(self, blob: bytes, *, file_name: str):
                 parse_calls.append(1)
-                raise RuntimeError("Quota exhausted")
+                raise RuntimeError("Service temporarily unavailable")
 
         parser = PptxParser(image_parser=_AlwaysFail())
         result = parser.parse(buf.getvalue(), file_name="all_fail.pptx")
@@ -386,6 +387,77 @@ class PptxVisionReroutingTest(unittest.TestCase):
             f"실패 시에도 cap 5 적용 (시도 기준) — got {len(parse_calls)} (이전 버그: 11)",
         )
         self.assertEqual(result.sections, [], "모두 실패라 section 0")
+
+    def test_quota_exhausted_fast_fail(self) -> None:
+        """W9 Day 4 한계 #49 — RESOURCE_EXHAUSTED 메시지 시 첫 호출 후 즉시 skip.
+
+        Day 3 cap (5회) 위에 추가 보호 레이어. 11 슬라이드 모두 picture-only +
+        ImageParser 가 'RESOURCE_EXHAUSTED' 메시지로 raise → 1회 호출 후 stop.
+        """
+        from app.adapters.impl.pptx_parser import PptxParser
+        from io import BytesIO
+        from PIL import Image
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        png_buf = BytesIO()
+        Image.new("RGB", (100, 50), color="white").save(png_buf, format="PNG")
+        png_bytes = png_buf.getvalue()
+
+        prs = Presentation()
+        for _ in range(11):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            slide.shapes.add_picture(
+                BytesIO(png_bytes),
+                Inches(1), Inches(1), Inches(2), Inches(1),
+            )
+        buf = BytesIO()
+        prs.save(buf)
+
+        parse_calls: list[int] = []
+
+        class _QuotaExhausted:
+            def parse(self, blob: bytes, *, file_name: str):
+                parse_calls.append(1)
+                # Gemini SDK 의 google.api_core.exceptions.ResourceExhausted str 형식 모방
+                raise RuntimeError(
+                    "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, "
+                    "'message': 'You exceeded your current quota'}}"
+                )
+
+        parser = PptxParser(image_parser=_QuotaExhausted())
+        result = parser.parse(buf.getvalue(), file_name="quota.pptx")
+
+        self.assertEqual(
+            len(parse_calls), 1,
+            f"quota 감지 즉시 fast-fail — got {len(parse_calls)} (cap 5 미적용까지 stop)",
+        )
+        self.assertEqual(result.sections, [])
+        # warnings 에 quota 감지 + 이후 skip 메시지
+        self.assertTrue(
+            any("quota 감지" in w for w in result.warnings),
+            f"warnings 에 quota 메시지 — got {result.warnings}",
+        )
+
+    def test_429_in_message_triggers_fast_fail(self) -> None:
+        """RESOURCE_EXHAUSTED 가 아닌 다른 형식의 quota 메시지도 감지 — '429' 키워드만으로."""
+        from app.adapters.impl.pptx_parser import PptxParser
+
+        data = self._make_pptx_with_picture(picture_count=1)
+
+        parse_calls: list[int] = []
+
+        class _Code429:
+            def parse(self, blob: bytes, *, file_name: str):
+                parse_calls.append(1)
+                raise RuntimeError("HTTP 429 Too Many Requests from upstream")
+
+        parser = PptxParser(image_parser=_Code429())
+        result = parser.parse(data, file_name="429.pptx")
+
+        self.assertEqual(len(parse_calls), 1)
+        self.assertEqual(result.sections, [])
+        self.assertTrue(any("quota 감지" in w for w in result.warnings))
 
     def test_no_image_parser_disables_vision(self) -> None:
         """image_parser=None (기본) → Vision 비활성, picture-only 슬라이드는 skip."""
