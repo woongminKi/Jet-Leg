@@ -11,6 +11,7 @@ Supabase SQL Editor에서 순서대로 실행.
 | 004-rollback | `004_rollback.sql` | (옵션 안전망, 미적용) PGroonga 인덱스/RPC 제거 → 003 의 simple FTS 복구. 적용은 운영자 결정 게이트 (PGroonga 빌드 실패·sparse RPC 비정상·호스팅 미지원 통보 중 하나). 적용 후 sparse_hits 회귀 → 사용자 측 검색 품질 정성 점검 의무. |
 | 005 | `005_vision_usage_log.sql` | W15 Day 2 — `vision_usage_log` 테이블 + 인덱스 + RLS. Vision API 호출 1건당 row 1건 영구 저장 (휘발성 한계 #34·#62 회수 준비). Python write-through 는 W15 Day 3+. |
 | 006 | `006_search_metrics_log.sql` | W15 Day 2 — `search_metrics_log` 테이블 + mode/fallback 인덱스 + RLS. 검색 호출 1건당 row 1건 (한계 #61·#76·#81 회수 준비). |
+| 007 | `007_metrics_trend_rpc.sql` | W16 Day 1 — 추세 분석 RPC 2개 (`get_search_metrics_trend(range, mode)` + `get_vision_usage_trend(range)`). epoch floor 기반 24h/7d/30d 시간 버킷 + zero-fill (generate_series). SECURITY DEFINER + service_role GRANT. frontend 시계열 그래프 (W16 Day 3) 의 데이터 소스. |
 
 ## 실행 절차
 
