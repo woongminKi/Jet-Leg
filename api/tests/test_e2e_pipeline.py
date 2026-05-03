@@ -1042,6 +1042,33 @@ class DedupTier3Test(E2EBaseTest):
         self.assertEqual(my_row["flags"]["duplicate_tier"], 3)
         self.assertEqual(my_row["flags"]["previous_version_of"], other_id)
 
+    def test_no_candidates_returns_none(self) -> None:
+        """후보 doc 0건 (자기 자신만) → match=None, flags 변경 X (graceful)."""
+        from app.ingest.stages.dedup import run_dedup_stage
+        from app.config import get_settings
+
+        user_id = get_settings().default_user_id
+        job_id, my_id = "job-s6d", "doc-s6d-me"
+        _seed_job(self.fake_client, job_id, my_id)
+
+        # 자기 자신만 documents 에 — `.neq("id", exclude_id)` 로 후보 0건.
+        self.fake_client._tables["documents"].append({
+            "id": my_id,
+            "user_id": user_id,
+            "title": "유일 문서",
+            "storage_path": "default/only.pdf",
+            "doc_embedding": [1.0] + [0.0] * 1023,
+            "deleted_at": None,
+            "flags": {"existing": "preserve"},
+        })
+
+        match = run_dedup_stage(job_id, doc_id=my_id)
+
+        self.assertIsNone(match, "후보 0건 → match None")
+        my_row = self.fake_client._tables["documents"][0]
+        # 기존 flags 보존 + duplicate_* 키 추가 X
+        self.assertEqual(my_row["flags"], {"existing": "preserve"})
+
     def test_tier3_filename_too_different_no_match(self) -> None:
         """sim 0.9 (Tier 3 범위) 이지만 filename 매우 다름 (< 0.6) → 매칭 X."""
         from app.ingest.stages.dedup import run_dedup_stage
