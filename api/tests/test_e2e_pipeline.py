@@ -41,12 +41,16 @@ os.environ.setdefault("HF_API_TOKEN", "dummy-test-token")
 
 
 class _FakeQueryResponse:
-    """supabase-py 의 `APIResponse` 흉내 — `.data` 속성만 노출."""
+    """supabase-py 의 `APIResponse` 흉내 — `.data` + `.count` (W10 Day 1 한계 #20)."""
 
-    __slots__ = ("data",)
+    __slots__ = ("data", "count")
 
-    def __init__(self, data: list[dict[str, Any]]) -> None:
+    def __init__(
+        self, data: list[dict[str, Any]], count: int | None = None
+    ) -> None:
         self.data = data
+        # PostgREST `select(count="exact")` 응답 시 채워짐. None = count 미요청.
+        self.count = count
 
 
 class _FakeTableQuery:
@@ -70,12 +74,17 @@ class _FakeTableQuery:
         self._select_cols: str = "*"
         self._order: tuple[str, bool] | None = None
         self._limit: int | None = None
+        self._count_mode: str | None = None  # PostgREST `count="exact"` 등
 
     # ---------------------- chain 빌더 ----------------------
 
-    def select(self, cols: str = "*") -> "_FakeTableQuery":
+    def select(
+        self, cols: str = "*", *, count: str | None = None
+    ) -> "_FakeTableQuery":
         self._op = "select"
         self._select_cols = cols
+        # supabase-py 의 `select(cols, count="exact")` — count 모드 기록.
+        self._count_mode = count
         return self
 
     def insert(
@@ -158,9 +167,11 @@ class _FakeTableQuery:
         if self._order is not None:
             col, desc = self._order
             out.sort(key=lambda r: r.get(col) or 0, reverse=desc)
+        # count 모드: limit 적용 *전* 의 매칭 row 수 (PostgREST 동작).
+        count_value = len(out) if self._count_mode else None
         if self._limit is not None:
             out = out[: self._limit]
-        return _FakeQueryResponse(out)
+        return _FakeQueryResponse(out, count=count_value)
 
     def _exec_insert(self, rows: list[dict[str, Any]]) -> _FakeQueryResponse:
         payload = self._payload
@@ -476,6 +487,10 @@ class E2EBaseTest(unittest.TestCase):
             ),
             patch(
                 "app.ingest.stages.tag_summarize.get_supabase_client",
+                return_value=self.fake_client,
+            ),
+            patch(
+                "app.ingest.stages.extract.get_supabase_client",
                 return_value=self.fake_client,
             ),
         ]
@@ -1261,6 +1276,89 @@ class TagSummarizeGracefulTest(E2EBaseTest):
         # flags 에 document_type / time_reference 머지
         self.assertEqual(doc_row["flags"]["document_type"], "보고서")
         self.assertEqual(doc_row["flags"]["time_reference"], "2025-01")
+
+
+# ====================================================================
+# S8 — extract stage (지원/비지원 포맷 dispatch + storage.get mock)
+# ====================================================================
+
+
+class ExtractDocxTest(E2EBaseTest):
+    """S8a — 지원 포맷 (DOCX) → DocxParser dispatch + ExtractionResult 반환.
+
+    검증 포인트
+    - documents.doc_type='docx' seed → _PARSERS_BY_DOC_TYPE 에서 DocxParser 선택
+    - SupabaseBlobStorage.get mock → 합성 DOCX bytes 반환
+    - parser.parse() 정상 실행 → sections 1+
+    - flags.extract_skipped 미마킹
+    """
+
+    def test_docx_dispatch_returns_extraction(self) -> None:
+        import io as _io
+        import docx as _docx
+        from app.ingest.stages import extract as extract_mod
+
+        job_id, doc_id = "job-s8a", "doc-s8a"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "doc_type": "docx",
+            "storage_path": "default/test.docx",
+            "flags": {},
+        })
+
+        # 합성 DOCX bytes
+        docx_doc = _docx.Document()
+        docx_doc.add_paragraph("e2e 검증 본문 텍스트입니다.")
+        buf = _io.BytesIO()
+        docx_doc.save(buf)
+        docx_bytes = buf.getvalue()
+
+        # SupabaseBlobStorage.get mock — 합성 bytes 반환
+        class _FakeStorage:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get(self, path: str) -> bytes:
+                return docx_bytes
+
+        with patch.object(extract_mod, "SupabaseBlobStorage", _FakeStorage):
+            result = extract_mod.run_extract_stage(job_id, doc_id)
+
+        self.assertIsNotNone(result, "DOCX dispatch 시 ExtractionResult 반환")
+        self.assertEqual(result.source_type, "docx")
+        self.assertGreaterEqual(len(result.sections), 1)
+        self.assertIn("e2e 검증 본문", result.raw_text)
+
+        # documents flags 변경 없음 — 지원 포맷이라 extract_skipped 미마킹
+        doc_row = self.fake_client._tables["documents"][0]
+        self.assertNotIn("extract_skipped", doc_row.get("flags", {}))
+
+
+class ExtractUnsupportedTest(E2EBaseTest):
+    """S8b — 비지원 포맷 (xlsx 등) → graceful skip + flags.extract_skipped=True."""
+
+    def test_unsupported_format_marks_skipped(self) -> None:
+        from app.ingest.stages.extract import run_extract_stage
+
+        job_id, doc_id = "job-s8b", "doc-s8b"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "doc_type": "xlsx",  # _PARSERS_BY_DOC_TYPE 미등록
+            "storage_path": "default/sheet.xlsx",
+            "flags": {},
+        })
+
+        result = run_extract_stage(job_id, doc_id)
+
+        # graceful — 예외 없이 None 반환
+        self.assertIsNone(result, "비지원 포맷은 None 반환")
+
+        # flags.extract_skipped 마킹 + reason 명시
+        doc_row = self.fake_client._tables["documents"][0]
+        self.assertTrue(doc_row["flags"].get("extract_skipped"))
+        self.assertIn("xlsx", doc_row["flags"].get("extract_skipped_reason", ""))
 
 
 if __name__ == "__main__":
