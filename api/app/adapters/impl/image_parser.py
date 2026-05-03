@@ -107,6 +107,21 @@ class ImageParser:
                 )
             )
 
+        # W13 Day 1 — US-07 화이트보드 action_items 별도 section.
+        # structured.action_items 가 list 면 검색 가능한 형태로 변환 (불릿 라인).
+        # 화이트보드 외 type (명함·차트·표) 의 structured 도 향후 확장 가능 (현재는 화이트보드만).
+        action_items = _extract_action_items(caption.structured)
+        if action_items:
+            bullet_text = "\n".join(f"- {item}" for item in action_items)
+            sections.append(
+                ExtractedSection(
+                    text=bullet_text,
+                    page=None,
+                    section_title="액션 아이템",
+                    bbox=None,
+                )
+            )
+
         raw_text = "\n\n".join(s.text for s in sections)
         return ExtractionResult(
             source_type=self.source_type,
@@ -170,3 +185,28 @@ def _has_transparency(img: Image.Image) -> bool:
     extrema = alpha.getextrema()
     # extrema = (min, max). min < 255 이면 투명 픽셀 존재
     return extrema[0] < 255
+
+
+def _extract_action_items(structured: dict | None) -> list[str]:
+    """W13 Day 1 — US-07 회수: structured.action_items 추출 + 정규화.
+
+    Gemini Vision 이 화이트보드 type 시 `{"action_items": [...]}` 반환 (gemini_vision._PROMPT).
+    list of str 만 보존 — dict / None / 빈 문자열 항목 제외.
+    """
+    if not isinstance(structured, dict):
+        return []
+    raw = structured.get("action_items")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            cleaned = item.strip()
+            if cleaned:
+                out.append(cleaned)
+        elif isinstance(item, dict):
+            # {task, owner, due_date} 같은 nested object 도 한 줄로 변환
+            parts = [str(v).strip() for v in item.values() if v]
+            if parts:
+                out.append(" · ".join(parts))
+    return out

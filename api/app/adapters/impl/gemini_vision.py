@@ -27,7 +27,12 @@ _DEFAULT_MODEL = "gemini-2.5-flash"
 
 # 기획서 §10.4 의 단일 호출 JSON 프롬프트.
 # - type 은 8종 화이트리스트 (애매하면 "기타")
-# - structured 는 명함·차트·표처럼 구조화 가능한 경우에만, 그 외 null
+# - structured 는 type 별 다른 schema:
+#   · 명함 → name/title/contact
+#   · 차트 → axis/series/values
+#   · 표 → headers/rows
+#   · 화이트보드 → action_items (W13 Day 1 — US-07 회수)
+#   · 그 외 → null
 # - 한국어 출력 강제
 _PROMPT = """\
 당신은 이미지에서 정보를 정확하게 추출하는 분석가입니다.
@@ -37,7 +42,7 @@ _PROMPT = """\
   "type": "문서|스크린샷|메신저대화|화이트보드|명함|차트|표|기타 중 하나 (애매하면 기타)",
   "ocr_text": "이미지의 모든 텍스트를 위→아래·좌→우 순서로. 텍스트가 없으면 빈 문자열",
   "caption": "이미지의 한국어 한 문장 요약 (≤ 80자, 끝에 마침표 없이)",
-  "structured": "구조화된 정보 객체 (명함 → name/title/contact, 차트 → axis/series/values, 표 → headers/rows). 구조화 불가 시 null"
+  "structured": "type 별 구조화 객체 — 명함: {name, title, contact}, 차트: {axis, series, values}, 표: {headers, rows}, 화이트보드: {action_items: [\"항목1\", \"항목2\", ...]} (담당자·기한 명시 시 그대로 보존). 구조화 불가 시 null"
 }
 """
 
