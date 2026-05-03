@@ -1709,6 +1709,91 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
             f"flags.scan=True 마킹 기대 — got {doc_row['flags']}",
         )
 
+    def test_scan_pdf_respects_max_5_page_cap(self) -> None:
+        """W15 Day 1 (한계 #64) — 6 페이지 스캔 PDF → 첫 5 페이지만 ImageParser 호출 + warning.
+
+        Vision API 비용 cap (`_MAX_SCAN_PAGES=5`) 동작 검증. 디자인 의도:
+        - process_count = min(total_pages, _MAX_SCAN_PAGES)
+        - total > 5 시 warning "N페이지 중 첫 5페이지만 처리"
+        """
+        import io as _io
+        import fitz as _fitz
+        from app.ingest.stages import extract as extract_mod
+        from app.adapters.parser import ExtractedSection, ExtractionResult
+
+        job_id, doc_id = "job-s11b", "doc-s11b"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "doc_type": "pdf",
+            "storage_path": "default/multi_scan.pdf",
+            "flags": {},
+        })
+
+        # 6 페이지 빈 PDF — 텍스트 0 (스캔본 시뮬), cap 5 초과
+        pdf_doc = _fitz.open()
+        for _ in range(6):
+            pdf_doc.new_page(width=595, height=842)
+        pdf_buf = _io.BytesIO()
+        pdf_doc.save(pdf_buf)
+        pdf_doc.close()
+        pdf_bytes = pdf_buf.getvalue()
+
+        class _FakeStorage:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get(self, path: str) -> bytes:
+                return pdf_bytes
+
+        parse_calls: list[str] = []
+
+        def _mock_image_parse(self_unused, data, *, file_name):
+            parse_calls.append(file_name)
+            return ExtractionResult(
+                source_type="image",
+                sections=[
+                    ExtractedSection(
+                        text="[표지] 모의 OCR",
+                        page=None,
+                        section_title="이미지 분류: 표지",
+                    )
+                ],
+                raw_text="[표지] 모의 OCR",
+                warnings=[],
+                metadata={"vision_type": "표지"},
+            )
+
+        with patch.object(extract_mod, "SupabaseBlobStorage", _FakeStorage), \
+                patch.object(
+                    type(extract_mod._image_parser), "parse", _mock_image_parse
+                ):
+            result = extract_mod.run_extract_stage(job_id, doc_id)
+
+        # cap 5 — 6 페이지 중 첫 5 페이지만 호출
+        self.assertEqual(
+            len(parse_calls), 5,
+            f"6-page 스캔 PDF → 첫 5 페이지만 ImageParser — got {len(parse_calls)}",
+        )
+        # 호출 page1~page5 확인 (page6 호출 X)
+        for i in range(1, 6):
+            self.assertTrue(
+                any(f"page{i}" in name for name in parse_calls),
+                f"page{i} 호출 누락",
+            )
+        self.assertFalse(
+            any("page6" in name for name in parse_calls),
+            "page6 은 cap 으로 skip 되어야 함",
+        )
+        # warning 명시 — "6페이지 중 첫 5페이지만 처리"
+        self.assertTrue(
+            any(
+                "6페이지" in w and "5페이지" in w
+                for w in result.warnings
+            ),
+            f"cap warning 누락 — got {result.warnings}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
