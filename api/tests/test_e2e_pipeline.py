@@ -336,6 +336,36 @@ def _seed_job(client: FakeSupabaseClient, job_id: str, doc_id: str) -> None:
     )
 
 
+def _seed_document(
+    client: FakeSupabaseClient,
+    doc_id: str,
+    *,
+    flags: dict[str, Any] | None = None,
+) -> None:
+    """documents 에 더미 row 주입 — content_gate `_merge_doc_flags` 가 select-then-update."""
+    client._tables["documents"].append(
+        {"id": doc_id, "flags": flags or {}}
+    )
+
+
+def _make_chunk(
+    *, doc_id: str, chunk_idx: int, text: str, page: int = 1
+) -> Any:
+    """ChunkRecord 픽스처 — content_gate 입력용 (chunk·load stage 안 거치고 직접 생성)."""
+    from app.adapters.vectorstore import ChunkRecord
+
+    return ChunkRecord(
+        doc_id=doc_id,
+        chunk_idx=chunk_idx,
+        text=text,
+        page=page,
+        section_title=None,
+        bbox=None,
+        char_range=(0, len(text)),
+        metadata={},
+    )
+
+
 # ====================================================================
 # E2EBaseTest — 모든 stage 모듈의 get_supabase_client + provider patch
 # ====================================================================
@@ -387,6 +417,10 @@ class E2EBaseTest(unittest.TestCase):
             patch(
                 "app.ingest.stages.embed.get_bgem3_provider",
                 return_value=self.fake_provider,
+            ),
+            patch(
+                "app.ingest.stages.content_gate.get_supabase_client",
+                return_value=self.fake_client,
             ),
         ]
         for p in self._patches:
@@ -647,6 +681,109 @@ class EmptyInputTest(E2EBaseTest):
         log_rows = self.fake_client._tables["ingest_logs"]
         failed = [r for r in log_rows if r.get("status") == "failed"]
         self.assertEqual(failed, [], f"빈 입력에 failed 기록됨: {failed}")
+
+
+# ====================================================================
+# S4 — content_gate stage (PII + 워터마크 + 정상 혼합)
+# ====================================================================
+
+
+class ContentGateTest(E2EBaseTest):
+    """S4 — chunks 3건 (PII RRN + 워터마크 + 정상) → content_gate 검증.
+
+    검증 포인트
+    - PII chunk: metadata.pii_ranges 부착 (RRN 위치)
+    - 워터마크 chunk: metadata.watermark_hits = ['대외비']
+    - 정상 chunk: metadata 변경 없음 (pii_ranges/watermark_hits 키 없음)
+    - documents.flags 머지: has_pii=True · has_watermark=True · third_party=False · watermark_hits=['대외비']
+    - 기존 documents.flags 의 다른 키 보존 (select-then-update merge 동작)
+    """
+
+    def test_pii_and_watermark_metadata_with_flags_merge(self) -> None:
+        from app.ingest.stages.content_gate import run_content_gate_stage
+
+        job_id, doc_id = "job-s4", "doc-s4"
+        _seed_job(self.fake_client, job_id, doc_id)
+        # 기존 flags 의 보존 검증을 위해 임의 키 사전 주입.
+        _seed_document(
+            self.fake_client, doc_id, flags={"existing_marker": "keep_me"}
+        )
+
+        # PII = 주민번호 (YYMMDD-NXXXXXX, 850123 = 1985-01-23 유효).
+        chunks = [
+            _make_chunk(
+                doc_id=doc_id,
+                chunk_idx=0,
+                text="신청자 홍길동 주민등록번호 850123-1234567 입니다.",
+            ),
+            _make_chunk(
+                doc_id=doc_id,
+                chunk_idx=1,
+                text="본 문서는 대외비 자료로 외부 유출이 금지됩니다.",
+            ),
+            _make_chunk(
+                doc_id=doc_id,
+                chunk_idx=2,
+                text="공사 대금은 분할 지급한다는 일반 조항입니다.",
+            ),
+        ]
+        extraction = _make_extraction(
+            [(c.text, None) for c in chunks]
+        )
+
+        updated_chunks, flags_update = run_content_gate_stage(
+            job_id, doc_id=doc_id, chunks=chunks, extraction=extraction
+        )
+
+        # ---------------- chunk metadata ----------------
+
+        self.assertEqual(len(updated_chunks), 3)
+
+        # PII chunk
+        pii_meta = updated_chunks[0].metadata
+        self.assertIn("pii_ranges", pii_meta)
+        self.assertEqual(len(pii_meta["pii_ranges"]), 1)
+        start, end = pii_meta["pii_ranges"][0]
+        self.assertEqual(
+            chunks[0].text[start:end],
+            "850123-1234567",
+            "pii_ranges 가 RRN 의 정확한 substring 가리킴",
+        )
+        self.assertNotIn("watermark_hits", pii_meta)
+
+        # 워터마크 chunk
+        wm_meta = updated_chunks[1].metadata
+        self.assertEqual(wm_meta.get("watermark_hits"), ["대외비"])
+        self.assertNotIn("pii_ranges", wm_meta)
+
+        # 정상 chunk — metadata 변경 없음
+        normal_meta = updated_chunks[2].metadata
+        self.assertNotIn("pii_ranges", normal_meta)
+        self.assertNotIn("watermark_hits", normal_meta)
+
+        # ---------------- doc flags ----------------
+
+        self.assertEqual(
+            flags_update,
+            {
+                "has_pii": True,
+                "has_watermark": True,
+                "third_party": False,
+                "watermark_hits": ["대외비"],
+            },
+        )
+
+        # documents 테이블 실 머지 결과 — 기존 키 보존 + 새 키 추가.
+        doc_row = next(
+            r for r in self.fake_client._tables["documents"]
+            if r["id"] == doc_id
+        )
+        merged = doc_row["flags"]
+        self.assertEqual(merged["existing_marker"], "keep_me")
+        self.assertTrue(merged["has_pii"])
+        self.assertTrue(merged["has_watermark"])
+        self.assertFalse(merged["third_party"])
+        self.assertEqual(merged["watermark_hits"], ["대외비"])
 
 
 if __name__ == "__main__":
