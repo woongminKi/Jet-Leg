@@ -31,6 +31,7 @@ from pathlib import PurePosixPath
 from pptx import Presentation
 
 from app.adapters.parser import ExtractedSection, ExtractionResult
+from app.services.quota import is_quota_exhausted
 
 logger = logging.getLogger(__name__)
 
@@ -288,29 +289,13 @@ def _vision_ocr_largest_picture(
             "PPTX Vision OCR 실패 (file=%s slide=%d): %s",
             file_name, slide_idx + 1, exc,
         )
-        # W9 Day 4 — quota 초과 감지 시 fast-fail (한계 #49)
-        if _is_quota_exhausted(msg):
+        # W9 Day 4 — quota 초과 감지 시 fast-fail (한계 #49). W9 Day 6 — 공통 유틸로 이전.
+        if is_quota_exhausted(msg):
             return None, True
         return None, False
 
     text = (result.raw_text or "").strip()
     return (text or None), False
-
-
-def _is_quota_exhausted(error_msg: str) -> bool:
-    """Gemini API 의 quota 초과 에러 메시지인지 검사 (W9 Day 4).
-
-    Gemini SDK 가 raise 하는 google.api_core.exceptions.ResourceExhausted 는
-    str() 시 "429 RESOURCE_EXHAUSTED" 또는 "quota" 포함. 보수적으로 셋 다 검사.
-    """
-    if not error_msg:
-        return False
-    upper = error_msg.upper()
-    return (
-        "RESOURCE_EXHAUSTED" in upper
-        or "429" in error_msg
-        or "QUOTA" in upper
-    )
 
 
 def _collect_pictures(shapes_iter) -> list:

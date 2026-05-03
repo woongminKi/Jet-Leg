@@ -22,6 +22,7 @@ from app.adapters.llm import ChatMessage
 from app.adapters.parser import ExtractionResult
 from app.db import get_supabase_client
 from app.ingest.jobs import begin_stage, end_stage, update_stage
+from app.services.quota import is_quota_exhausted
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +45,28 @@ def run_tag_summarize_stage(
     summary: dict[str, Any] | None = None
     errors: list[str] = []
 
+    quota_exhausted = False  # W9 Day 6 한계 #53 — 첫 호출 quota 시 두 번째 skip
+
     try:
         tags = _call_tags(extraction.raw_text)
     except Exception as exc:  # noqa: BLE001
         logger.warning("태그 호출 실패 (doc=%s): %s", doc_id, exc)
         errors.append(f"tags: {exc}")
+        if is_quota_exhausted(str(exc)):
+            quota_exhausted = True
 
-    try:
-        summary = _call_summary(extraction.raw_text)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("요약 호출 실패 (doc=%s): %s", doc_id, exc)
-        errors.append(f"summary: {exc}")
+    if quota_exhausted:
+        logger.info(
+            "tag_summarize: doc=%s quota 감지 → summary 호출 skip (LLM 비용 절약)",
+            doc_id,
+        )
+        errors.append("summary: skipped due to quota")
+    else:
+        try:
+            summary = _call_summary(extraction.raw_text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("요약 호출 실패 (doc=%s): %s", doc_id, exc)
+            errors.append(f"summary: {exc}")
 
     try:
         _persist(doc_id, tags=tags, summary=summary)

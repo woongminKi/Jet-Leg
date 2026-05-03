@@ -1150,6 +1150,72 @@ class TagSummarizeGracefulTest(E2EBaseTest):
         self.assertEqual(doc_row.get("tags"), [])
         self.assertIsNone(doc_row.get("summary"))
 
+    def test_quota_exhausted_skips_summary_call(self) -> None:
+        """W9 Day 6 한계 #53 — _call_tags 가 RESOURCE_EXHAUSTED 시 _call_summary skip.
+
+        Day 4 PptxParser fast-fail 패턴을 LLM stage 에 적용. 두 번째 호출 절약 +
+        Vision 호출과 quota 공유라 부수적 안정성↑.
+        """
+        from app.ingest.stages import tag_summarize
+
+        job_id, doc_id = "job-s7c", "doc-s7c"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id, "tags": [], "summary": None,
+            "implications": None, "flags": {},
+        })
+        extraction = _make_extraction([("본문", None)])
+
+        # _llm.complete 호출 카운터 — 첫 호출 raise (RESOURCE_EXHAUSTED) 후 두 번째 호출 안 됨
+        call_count = [0]
+
+        def _quota_raise(*args, **kwargs):
+            call_count[0] += 1
+            raise RuntimeError(
+                "429 RESOURCE_EXHAUSTED. You exceeded your current quota"
+            )
+
+        with patch.object(tag_summarize._llm, "complete", side_effect=_quota_raise):
+            tag_summarize.run_tag_summarize_stage(
+                job_id, doc_id=doc_id, extraction=extraction
+            )
+
+        # 첫 호출 (_call_tags) 만 실행 — _call_summary 는 skip
+        self.assertEqual(
+            call_count[0], 1,
+            f"quota 감지 후 summary 호출 skip — got {call_count[0]} (이전 정책: 2)",
+        )
+        # graceful — DB 의 tags/summary 는 그대로
+        doc_row = self.fake_client._tables["documents"][0]
+        self.assertEqual(doc_row.get("tags"), [])
+        self.assertIsNone(doc_row.get("summary"))
+
+    def test_non_quota_failure_still_attempts_summary(self) -> None:
+        """quota 가 아닌 일반 fail (예: 5xx) 은 두 번째 호출 그대로 시도."""
+        from app.ingest.stages import tag_summarize
+
+        job_id, doc_id = "job-s7d", "doc-s7d"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id, "tags": [], "summary": None,
+            "implications": None, "flags": {},
+        })
+        extraction = _make_extraction([("본문", None)])
+
+        call_count = [0]
+
+        def _generic_raise(*args, **kwargs):
+            call_count[0] += 1
+            raise RuntimeError("Service temporarily unavailable")
+
+        with patch.object(tag_summarize._llm, "complete", side_effect=_generic_raise):
+            tag_summarize.run_tag_summarize_stage(
+                job_id, doc_id=doc_id, extraction=extraction
+            )
+
+        # 두 호출 모두 시도 (graceful 정책 유지)
+        self.assertEqual(call_count[0], 2)
+
     def test_llm_success_persists_tags_and_summary(self) -> None:
         from app.ingest.stages import tag_summarize
         import json
