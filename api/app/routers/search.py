@@ -213,6 +213,7 @@ def search(
                 has_dense=False,
                 fallback_reason="permanent_4xx",
                 embed_cache_hit=False,
+                mode=mode,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -274,6 +275,7 @@ def search(
             has_dense=dense_vec is not None,
             fallback_reason=fallback_reason,
             embed_cache_hit=embed_cache_hit,
+                mode=mode,
         )
         return SearchResponse(
             query=clean_q,
@@ -341,6 +343,7 @@ def search(
             has_dense=dense_vec is not None,
             fallback_reason=fallback_reason,
             embed_cache_hit=embed_cache_hit,
+                mode=mode,
         )
         return SearchResponse(
             query=clean_q,
@@ -443,6 +446,7 @@ def search(
         has_dense=dense_vec is not None,
         fallback_reason=fallback_reason,
         embed_cache_hit=embed_cache_hit,
+                mode=mode,
     )
     return SearchResponse(
         query=clean_q,

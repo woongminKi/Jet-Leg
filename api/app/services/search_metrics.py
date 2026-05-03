@@ -41,6 +41,9 @@ _ring: deque[dict] = deque(maxlen=_RING_MAXLEN)
 _lock = threading.Lock()
 
 
+_VALID_MODES: tuple[str, ...] = ("hybrid", "dense", "sparse")
+
+
 def record_search(
     *,
     took_ms: int,
@@ -50,6 +53,7 @@ def record_search(
     has_dense: bool,
     fallback_reason: str | None,
     embed_cache_hit: bool = False,
+    mode: str = "hybrid",
 ) -> None:
     """`/search` 1회 처리 결과를 ring buffer 에 적재.
 
@@ -61,10 +65,14 @@ def record_search(
         - "permanent_4xx": HF API 영구 실패 → 503 raise 예정 (가시성 위해 record 만)
 
     `embed_cache_hit`: W4-Q-3 — `embed_query` LRU 의 hit 여부.
-        - True: 동일 query 재호출이라 HF API 호출 0회 (warm path)
-        - False: cache miss (cold) 또는 fallback 진입 (dense path 미실행)
-        - default False: 503 raise 분기 등 backward compat 안전값.
+
+    `mode` (W14 Day 3 한계 #77 — ablation 분리 측정):
+        - "hybrid" (default): dense + sparse RRF
+        - "dense": dense_rank 만 통과시킨 ablation
+        - "sparse": sparse_rank 만 통과시킨 ablation
+        - 화이트리스트 외 값은 "hybrid" 로 강제 (보수적).
     """
+    safe_mode = mode if mode in _VALID_MODES else "hybrid"
     event = {
         "took_ms": int(took_ms),
         "dense_hits": int(dense_hits),
@@ -73,6 +81,7 @@ def record_search(
         "has_dense": bool(has_dense),
         "fallback_reason": fallback_reason,
         "embed_cache_hit": bool(embed_cache_hit),
+        "mode": safe_mode,
     }
     with _lock:
         _ring.append(event)
@@ -83,13 +92,28 @@ def get_search_slo() -> dict:
 
     sample_count == 0 인 경우 모든 백분위/평균 필드는 None — 프론트는 "측정 데이터 없음" 표기.
     fallback_breakdown 은 항상 3개 키 (`transient_5xx`, `permanent_4xx`, `none`) 노출 — 0 이라도.
+
+    W14 Day 3 (한계 #77) — by_mode 신규 필드:
+        - 전체 합산 (기존 필드) + by_mode dict (mode 별 동일 schema)
+        - mode 키는 hybrid / dense / sparse 항상 노출 (sample 0 이라도)
+        - 사용자가 mode 별 p50/p95 비교 → ablation 정확도↑
     """
     with _lock:
         # ring 스냅샷 — 락 보유 시간 최소화 위해 list copy 후 즉시 release
         snapshot = list(_ring)
 
-    sample_count = len(snapshot)
+    overall = _compute_slo_for(snapshot)
+    by_mode = {
+        m: _compute_slo_for([e for e in snapshot if e.get("mode", "hybrid") == m])
+        for m in _VALID_MODES
+    }
+    overall["by_mode"] = by_mode
+    return overall
 
+
+def _compute_slo_for(samples: list[dict]) -> dict:
+    """주어진 sample 리스트의 SLO 통계 계산 — 전체/mode별 공통 로직."""
+    sample_count = len(samples)
     fallback_breakdown: dict[str, int] = {key: 0 for key in (*_FALLBACK_VALUES, _NONE_KEY)}
     if sample_count == 0:
         return {
@@ -105,24 +129,23 @@ def get_search_slo() -> dict:
             "cache_hit_rate": None,
         }
 
-    took_samples = sorted(e["took_ms"] for e in snapshot)
+    took_samples = sorted(e["took_ms"] for e in samples)
     p50 = _percentile_nearest_rank(took_samples, 0.50)
     p95 = _percentile_nearest_rank(took_samples, 0.95)
 
-    avg_dense = round(statistics.fmean(e["dense_hits"] for e in snapshot), 2)
-    avg_sparse = round(statistics.fmean(e["sparse_hits"] for e in snapshot), 2)
-    avg_fused = round(statistics.fmean(e["fused"] for e in snapshot), 2)
+    avg_dense = round(statistics.fmean(e["dense_hits"] for e in samples), 2)
+    avg_sparse = round(statistics.fmean(e["sparse_hits"] for e in samples), 2)
+    avg_fused = round(statistics.fmean(e["fused"] for e in samples), 2)
 
     reasons = Counter(
         (e["fallback_reason"] if e["fallback_reason"] is not None else _NONE_KEY)
-        for e in snapshot
+        for e in samples
     )
     for key in fallback_breakdown:
         fallback_breakdown[key] = int(reasons.get(key, 0))
     fallback_count = sum(fallback_breakdown[key] for key in _FALLBACK_VALUES)
 
-    # W4-Q-3 — `embed_query` LRU cache hit 비율. backward compat: 키 없는 옛 이벤트는 False 간주.
-    cache_hit_count = sum(1 for e in snapshot if e.get("embed_cache_hit"))
+    cache_hit_count = sum(1 for e in samples if e.get("embed_cache_hit"))
     cache_hit_rate = round(cache_hit_count / sample_count, 4)
 
     return {

@@ -86,6 +86,9 @@ class SearchSloStats(BaseModel):
     fallback_breakdown: dict[str, int]
     cache_hit_count: int = 0
     cache_hit_rate: float | None = None
+    # W14 Day 3 (한계 #77) — mode 별 분리 측정. 같은 schema 가 mode 별로 반복.
+    # 키: hybrid / dense / sparse — 항상 노출 (sample 0 이라도).
+    by_mode: dict[str, dict] = {}
 
 
 class IngestSloAggregate(BaseModel):

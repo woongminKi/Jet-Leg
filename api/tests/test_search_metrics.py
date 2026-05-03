@@ -90,5 +90,73 @@ class SearchMetricsTest(unittest.TestCase):
         self.assertEqual(slo["p95_ms"], 485)
 
 
+class ByModeSplitTest(unittest.TestCase):
+    """W14 Day 3 (한계 #77) — mode 별 분리 측정 (hybrid/dense/sparse)."""
+
+    def setUp(self) -> None:
+        search_metrics.reset()
+
+    def tearDown(self) -> None:
+        search_metrics.reset()
+
+    def test_by_mode_splits_samples(self) -> None:
+        search_metrics.record_search(
+            took_ms=100, dense_hits=10, sparse_hits=5, fused=10,
+            has_dense=True, fallback_reason=None, mode="hybrid",
+        )
+        search_metrics.record_search(
+            took_ms=200, dense_hits=10, sparse_hits=0, fused=10,
+            has_dense=True, fallback_reason=None, mode="dense",
+        )
+        search_metrics.record_search(
+            took_ms=300, dense_hits=0, sparse_hits=5, fused=5,
+            has_dense=False, fallback_reason=None, mode="sparse",
+        )
+
+        slo = search_metrics.get_search_slo()
+        self.assertEqual(slo["sample_count"], 3)
+        self.assertEqual(slo["p50_ms"], 200)
+
+        self.assertIn("by_mode", slo)
+        self.assertEqual(
+            set(slo["by_mode"].keys()), {"hybrid", "dense", "sparse"}
+        )
+        self.assertEqual(slo["by_mode"]["hybrid"]["p50_ms"], 100)
+        self.assertEqual(slo["by_mode"]["dense"]["p50_ms"], 200)
+        self.assertEqual(slo["by_mode"]["sparse"]["p50_ms"], 300)
+        self.assertEqual(slo["by_mode"]["hybrid"]["sample_count"], 1)
+
+    def test_invalid_mode_falls_back_to_hybrid(self) -> None:
+        search_metrics.record_search(
+            took_ms=100, dense_hits=1, sparse_hits=1, fused=1,
+            has_dense=True, fallback_reason=None, mode="bogus",
+        )
+        slo = search_metrics.get_search_slo()
+        self.assertEqual(slo["by_mode"]["hybrid"]["sample_count"], 1)
+        self.assertEqual(slo["by_mode"]["dense"]["sample_count"], 0)
+        self.assertEqual(slo["by_mode"]["sparse"]["sample_count"], 0)
+
+    def test_default_mode_is_hybrid(self) -> None:
+        """mode 인자 미전달 시 hybrid 기본 — backward compat."""
+        search_metrics.record_search(
+            took_ms=50, dense_hits=1, sparse_hits=1, fused=1,
+            has_dense=True, fallback_reason=None,
+        )
+        slo = search_metrics.get_search_slo()
+        self.assertEqual(slo["by_mode"]["hybrid"]["sample_count"], 1)
+
+    def test_zero_samples_per_mode_renders_nulls(self) -> None:
+        """비어있는 mode 의 by_mode entry 도 정상 schema."""
+        search_metrics.record_search(
+            took_ms=100, dense_hits=1, sparse_hits=1, fused=1,
+            has_dense=True, fallback_reason=None, mode="hybrid",
+        )
+        slo = search_metrics.get_search_slo()
+        # dense / sparse 는 sample 0
+        self.assertEqual(slo["by_mode"]["dense"]["sample_count"], 0)
+        self.assertIsNone(slo["by_mode"]["dense"]["p50_ms"])
+        self.assertIsNone(slo["by_mode"]["sparse"]["cache_hit_rate"])
+
+
 if __name__ == "__main__":
     unittest.main()
