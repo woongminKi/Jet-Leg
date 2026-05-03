@@ -92,6 +92,35 @@ export function SearchSloCard({ stats }: SearchSloCardProps) {
               </ul>
             )}
 
+            {/* W14 Day 4 (한계 #83) — by_mode 분리 측정 (ablation 비교) */}
+            {slo.by_mode &&
+              Object.values(slo.by_mode).some((m) => m.sample_count > 0) && (
+                <div className="space-y-1 border-t border-border pt-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    mode 별 비교 (ablation)
+                  </div>
+                  <ul className="space-y-1">
+                    {(['hybrid', 'dense', 'sparse'] as const).map((m) => {
+                      const entry = slo.by_mode?.[m];
+                      if (!entry || entry.sample_count === 0) return null;
+                      return (
+                        <li
+                          key={m}
+                          className="flex items-center justify-between text-xs"
+                        >
+                          <span className="font-mono text-muted-foreground">
+                            {m}
+                          </span>
+                          <span className="font-mono tabular-nums text-foreground">
+                            p50 {entry.p50_ms}ms · n {entry.sample_count}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
             <div className="border-t border-border pt-2 text-[10px] text-muted-foreground">
               자체 목표 ≤ {SLO_SELF_TARGET_MS}ms · 절대 ≤ {SLO_ABSOLUTE_TARGET_MS}ms
             </div>

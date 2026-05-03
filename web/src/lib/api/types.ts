@@ -63,11 +63,8 @@ export interface TagCount {
   count: number;
 }
 
-/** W3 Day 2 Phase 3 — `/search` 의 ring buffer 기반 SLO 통계.
- *  sample_count === 0 이면 모든 백분위/평균은 null.
- *  fallback_breakdown 은 항상 3개 키 (transient_5xx, permanent_4xx, none) 노출.
- *  W4-Q-3 — embed_query LRU cache hit 카운트 / 비율 (sample 0 시 null). */
-export interface SearchSloStats {
+/** W14 Day 3 — by_mode entry. `SearchSloStats` 와 동일 schema (recursion 회피 위해 분리). */
+export interface SearchSloPerMode {
   p50_ms: number | null;
   p95_ms: number | null;
   sample_count: number;
@@ -78,6 +75,15 @@ export interface SearchSloStats {
   fallback_breakdown: Record<string, number>;
   cache_hit_count: number;
   cache_hit_rate: number | null;
+}
+
+/** W3 Day 2 Phase 3 — `/search` 의 ring buffer 기반 SLO 통계.
+ *  sample_count === 0 이면 모든 백분위/평균은 null.
+ *  fallback_breakdown 은 항상 3개 키 (transient_5xx, permanent_4xx, none) 노출.
+ *  W4-Q-3 — embed_query LRU cache hit 카운트 / 비율 (sample 0 시 null).
+ *  W14 Day 3 — by_mode 신규: hybrid/dense/sparse 분리 측정. */
+export interface SearchSloStats extends SearchSloPerMode {
+  by_mode?: Record<string, SearchSloPerMode>;
 }
 
 /** W7 Day 3 — chunks 단위 가시성 (DE-65 후 1256 환경 + chunk_filter 마킹 추적).

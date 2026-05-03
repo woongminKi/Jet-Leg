@@ -146,9 +146,11 @@ export function SearchSubheader({
             </Badge>
           </div>
         )}
-        {/* W14 Day 1 — ablation mode 3-state 토글 (md+ 노출, 좁은 폭 보호) */}
+        {/* W14 Day 1·4 — ablation mode 3-state 토글
+            Day 1: md+ 만 노출
+            Day 4 (한계 #78): mobile 도 노출 — 좁은 폭은 폰트/패딩 축소로 대응 */}
         <div
-          className="hidden h-7 items-center rounded-md border border-border bg-card md:inline-flex"
+          className="inline-flex h-6 items-center rounded-md border border-border bg-card md:h-7"
           title="ablation 모드 — hybrid (기본) / dense / sparse 비교"
         >
           {(['hybrid', 'dense', 'sparse'] as const).map((m) => (
@@ -158,8 +160,8 @@ export function SearchSubheader({
               onClick={() => switchMode(m)}
               className={
                 mode === m
-                  ? 'h-full rounded-sm bg-primary px-2 text-[10px] font-semibold text-primary-foreground'
-                  : 'h-full px-2 text-[10px] text-muted-foreground hover:text-foreground'
+                  ? 'h-full rounded-sm bg-primary px-1.5 text-[9px] font-semibold text-primary-foreground md:px-2 md:text-[10px]'
+                  : 'h-full px-1.5 text-[9px] text-muted-foreground hover:text-foreground md:px-2 md:text-[10px]'
               }
               aria-pressed={mode === m}
             >

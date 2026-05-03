@@ -60,7 +60,11 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
           <FilterSidebar />
           <section>
             {response.items.length === 0 ? (
-              <NoResults query={query} popularTags={stats?.popular_tags ?? []} />
+              <NoResults
+                query={query}
+                popularTags={stats?.popular_tags ?? []}
+                docId={docId}
+              />
             ) : (
               <div className="space-y-4">
                 {response.items.map((hit) => (
@@ -78,22 +82,38 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
 function NoResults({
   query,
   popularTags,
+  docId,
 }: {
   query: string;
   popularTags: Array<{ tag: string; count: number }>;
+  docId: string | null;
 }) {
+  // W14 Day 4 (한계 #68) — doc 스코프 검색에서 0건 시 전체 검색 fallback 안내
+  const isDocScope = docId !== null;
   return (
     <div className="flex flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-border bg-muted/20 px-6 py-16 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted">
         <SearchIcon className="h-6 w-6 text-muted-foreground" />
       </div>
       <p className="text-base font-medium text-foreground">
-        &lsquo;{query}&rsquo; 에 대한 결과가 없어요
+        {isDocScope
+          ? `이 문서 안에서 '${query}' 결과가 없어요`
+          : `'${query}' 에 대한 결과가 없어요`}
       </p>
       <p className="text-sm text-muted-foreground">
-        다른 키워드를 시도하거나 아래 인기 태그를 눌러 검색해 보세요.
+        {isDocScope
+          ? '문서 스코프를 해제하고 전체에서 다시 찾아보세요.'
+          : '다른 키워드를 시도하거나 아래 인기 태그를 눌러 검색해 보세요.'}
       </p>
-      {popularTags.length > 0 && (
+      {isDocScope && (
+        <Link
+          href={`/search?q=${encodeURIComponent(query)}`}
+          className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          전체 검색으로 보기
+        </Link>
+      )}
+      {!isDocScope && popularTags.length > 0 && (
         <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
           {popularTags.slice(0, 8).map((t) => (
             <Link key={t.tag} href={`/search?q=${encodeURIComponent(t.tag)}`}>
