@@ -979,6 +979,114 @@ class DedupTier2Test(E2EBaseTest):
 
 
 # ====================================================================
+# S6b — dedup Tier 3 (sim 0.85~0.95 + filename ≥0.6)
+# ====================================================================
+
+
+class DedupTier3Test(E2EBaseTest):
+    """S6b — Tier 2 임계값 (0.95) 미달 + Tier 3 임계값 (0.85) 통과 + filename 유사 → Tier 3.
+
+    cosine 시뮬: my_vec=[1,0,…], other_vec=[0.9, 0.4358..., 0,…] → cos≈0.9 (∈ [0.85, 0.95))
+    filename 유사: "default/v1.pdf" vs "default/v2.pdf" → SequenceMatcher ratio ≈ 0.93
+    """
+
+    def test_tier3_match_marks_previous_version(self) -> None:
+        from app.ingest.stages.dedup import run_dedup_stage
+        from app.config import get_settings
+        import math
+
+        user_id = get_settings().default_user_id
+        job_id, my_id, other_id = "job-s6b", "doc-s6b-me", "doc-s6b-other"
+        _seed_job(self.fake_client, job_id, my_id)
+
+        # cosine 0.9 — my=[1,0,...,0], other=[0.9, sqrt(1-0.81), 0,...,0]
+        my_vec = [1.0] + [0.0] * 1023
+        rest = math.sqrt(1.0 - 0.81)  # ≈ 0.4359
+        other_vec = [0.9, rest] + [0.0] * 1022
+
+        self.fake_client._tables["documents"].extend([
+            {
+                "id": my_id,
+                "user_id": user_id,
+                "title": "보고서 v2",
+                "storage_path": "default/report_v2.pdf",
+                "doc_embedding": my_vec,
+                "deleted_at": None,
+                "flags": {},
+            },
+            {
+                "id": other_id,
+                "user_id": user_id,
+                "title": "보고서 v1",
+                "storage_path": "default/report_v1.pdf",
+                "doc_embedding": other_vec,
+                "deleted_at": None,
+                "flags": {},
+            },
+        ])
+
+        match = run_dedup_stage(job_id, doc_id=my_id)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["duplicate_tier"], 3)
+        self.assertEqual(match["previous_version_of"], other_id)
+        # cosine ≥ 0.85 + < 0.95
+        self.assertGreaterEqual(match["duplicate_similarity"], 0.85)
+        self.assertLess(match["duplicate_similarity"], 0.95)
+        # filename ≥ 0.6
+        self.assertGreaterEqual(match["filename_similarity"], 0.6)
+
+        my_row = next(
+            r for r in self.fake_client._tables["documents"] if r["id"] == my_id
+        )
+        self.assertEqual(my_row["flags"]["duplicate_tier"], 3)
+        self.assertEqual(my_row["flags"]["previous_version_of"], other_id)
+
+    def test_tier3_filename_too_different_no_match(self) -> None:
+        """sim 0.9 (Tier 3 범위) 이지만 filename 매우 다름 (< 0.6) → 매칭 X."""
+        from app.ingest.stages.dedup import run_dedup_stage
+        from app.config import get_settings
+        import math
+
+        user_id = get_settings().default_user_id
+        job_id, my_id, other_id = "job-s6c", "doc-s6c-me", "doc-s6c-other"
+        _seed_job(self.fake_client, job_id, my_id)
+
+        my_vec = [1.0] + [0.0] * 1023
+        rest = math.sqrt(1.0 - 0.81)
+        other_vec = [0.9, rest] + [0.0] * 1022
+
+        self.fake_client._tables["documents"].extend([
+            {
+                "id": my_id,
+                "user_id": user_id,
+                "title": "한국 경제 리포트",
+                "storage_path": "default/economy_kr.pdf",
+                "doc_embedding": my_vec,
+                "deleted_at": None,
+                "flags": {},
+            },
+            {
+                "id": other_id,
+                "user_id": user_id,
+                "title": "전혀 다른 자료",
+                "storage_path": "default/zzzzzzzz.docx",
+                "doc_embedding": other_vec,
+                "deleted_at": None,
+                "flags": {},
+            },
+        ])
+
+        match = run_dedup_stage(job_id, doc_id=my_id)
+        self.assertIsNone(match, "filename 유사도 미달이면 Tier 3 매칭 X")
+
+        my_row = next(
+            r for r in self.fake_client._tables["documents"] if r["id"] == my_id
+        )
+        self.assertNotIn("duplicate_tier", my_row["flags"])
+
+
+# ====================================================================
 # S7 — tag_summarize stage (LLM mock, graceful fail)
 # ====================================================================
 

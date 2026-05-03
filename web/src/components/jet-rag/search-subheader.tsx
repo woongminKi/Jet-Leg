@@ -118,7 +118,6 @@ export function SearchSubheader({
               ? '디버그 모드 ON — 클릭 시 OFF'
               : '디버그 모드 OFF — chunk 메타·rrf·overlap 펼쳐 보기'
           }
-          className="hidden md:inline-flex"
         >
           <Bug className="h-4 w-4" />
         </Button>
