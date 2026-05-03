@@ -20,6 +20,12 @@ from unittest.mock import MagicMock
 os.environ.setdefault("HF_API_TOKEN", "dummy-test-token")
 os.environ.setdefault("GEMINI_API_KEY", "dummy-test-token")
 
+# W17 Day 4 — discover 시 tests/__init__.py 가 top-level-dir 미명시로 안 잡힐 때 보호.
+# ENABLED='0' — DB 연결 timeout 회피 / ASYNC='0' — first-warn capture race 방지.
+# 강제 set (다른 테스트가 cleanup 안 한 채 leak 됐어도 안전).
+os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+os.environ["JET_RAG_METRICS_PERSIST_ASYNC"] = "0"
+
 
 class VisionMetricsBasicTest(unittest.TestCase):
     """record_call → get_usage 누적 동작."""
@@ -249,6 +255,7 @@ class PersistGracefulTest(unittest.TestCase):
         import os
 
         os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        os.environ["JET_RAG_METRICS_PERSIST_ASYNC"] = "0"  # sync 강제 — exception swallow 검증
         try:
             with patch(
                 "app.db.get_supabase_client",
@@ -281,6 +288,7 @@ class FirstWarnPatternTest(unittest.TestCase):
         import datetime as _dt
 
         os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        os.environ["JET_RAG_METRICS_PERSIST_ASYNC"] = "0"  # sync 강제 (capture race 회피)
         try:
             with patch(
                 "app.db.get_supabase_client",
@@ -305,6 +313,7 @@ class FirstWarnPatternTest(unittest.TestCase):
         import datetime as _dt
 
         os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        os.environ["JET_RAG_METRICS_PERSIST_ASYNC"] = "0"
         try:
             with patch(
                 "app.db.get_supabase_client",

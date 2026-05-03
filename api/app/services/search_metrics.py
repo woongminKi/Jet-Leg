@@ -28,6 +28,7 @@ import os
 import statistics
 import threading
 from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -36,9 +37,27 @@ logger = logging.getLogger(__name__)
 # W15 Day 3 — DB write-through env (vision_metrics 와 동일).
 _PERSIST_ENV_KEY = "JET_RAG_METRICS_PERSIST_ENABLED"
 
+# W17 Day 4 한계 #88 — search 응답 latency 보호. async fire-and-forget.
+_PERSIST_ASYNC_ENV_KEY = "JET_RAG_METRICS_PERSIST_ASYNC"
+
 # W17 Day 3 한계 #85 — DB write-through 첫 1회만 warn (이후는 debug 로그).
 # 마이그레이션 006 미적용 운영 환경에서 한 번만 명시 알림 → 사용자 인지 + 로그 노이즈 방지.
 _first_persist_warn_logged: bool = False
+
+# W17 Day 4 #88 — 모듈 레벨 ThreadPoolExecutor (lazy init).
+_persist_executor: ThreadPoolExecutor | None = None
+_persist_executor_lock = threading.Lock()
+
+
+def _get_persist_executor() -> ThreadPoolExecutor:
+    global _persist_executor
+    if _persist_executor is None:
+        with _persist_executor_lock:
+            if _persist_executor is None:
+                _persist_executor = ThreadPoolExecutor(
+                    max_workers=2, thread_name_prefix="search-persist"
+                )
+    return _persist_executor
 
 # 운영 부하 단일 사용자 환경 — 최근 500건이면 5분 분량 (10 QPS 가정).
 # 늘릴 때는 메모리 영향 검토 (이벤트 1건 ≈ 200B → 500건 ≈ 100KB).
@@ -110,13 +129,38 @@ def _persist_to_db(
     event: dict,
     query_text: str | None,
 ) -> None:
-    """search_metrics_log 테이블 insert. 실패는 log warning + swallow.
+    """search_metrics_log 테이블 insert (비동기 dispatch).
 
-    마이그레이션 006 미적용 시 graceful — in-memory ring buffer 만 동작.
-    JET_RAG_METRICS_PERSIST_ENABLED='0' 시 skip (단위 테스트 timeout 회피).
+    JET_RAG_METRICS_PERSIST_ENABLED='0' 시 skip.
+    JET_RAG_METRICS_PERSIST_ASYNC='1' (default) 시 ThreadPoolExecutor fire-and-forget
+    → /search 응답 latency 영향 0 (W17 Day 4 한계 #88).
+    JET_RAG_METRICS_PERSIST_ASYNC='0' 시 sync (단위 테스트 first-warn capture).
     """
     if os.environ.get(_PERSIST_ENV_KEY, "1") == "0":
         return
+    if os.environ.get(_PERSIST_ASYNC_ENV_KEY, "1") == "0":
+        _persist_to_db_sync(
+            recorded_at=recorded_at, event=event, query_text=query_text
+        )
+        return
+    _get_persist_executor().submit(
+        _persist_to_db_sync,
+        recorded_at=recorded_at,
+        event=event,
+        query_text=query_text,
+    )
+
+
+def _persist_to_db_sync(
+    *,
+    recorded_at: datetime,
+    event: dict,
+    query_text: str | None,
+) -> None:
+    """search_metrics_log 테이블 insert (sync). 실패는 log warning + swallow.
+
+    background thread (`_persist_executor`) 또는 sync path (env=0) 에서 호출됨.
+    """
     try:
         from app.db import get_supabase_client
 

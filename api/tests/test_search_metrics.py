@@ -5,7 +5,12 @@
 
 from __future__ import annotations
 
+import os
 import unittest
+
+# W17 Day 4 — discover 시 tests/__init__.py 가 top-level-dir 미명시로 안 잡힐 때 보호.
+os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+os.environ["JET_RAG_METRICS_PERSIST_ASYNC"] = "0"
 
 from app.services import search_metrics
 
@@ -170,6 +175,7 @@ class SearchMetricsFirstWarnPatternTest(unittest.TestCase):
         import datetime as _dt
 
         _os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        _os.environ["JET_RAG_METRICS_PERSIST_ASYNC"] = "0"
         try:
             with patch(
                 "app.db.get_supabase_client",

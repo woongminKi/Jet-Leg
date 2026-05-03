@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,28 @@ logger = logging.getLogger(__name__)
 # W15 Day 3 — DB write-through 활성 여부.
 # default "1" — 운영은 활성. 단위 테스트에서 "0" 설정 시 skip → connection timeout 회피.
 _PERSIST_ENV_KEY = "JET_RAG_METRICS_PERSIST_ENABLED"
+
+# W17 Day 4 한계 #88 — DB write-through 비동기 실행 (검색 latency 보호).
+# default "1" — 운영은 비동기 (호출자 영향 0). 단위 테스트 / first-warn capture 시 "0" 으로
+# sync 강제 → background thread race 회피.
+_PERSIST_ASYNC_ENV_KEY = "JET_RAG_METRICS_PERSIST_ASYNC"
+
+# 모듈 레벨 ThreadPoolExecutor — max_workers=2 (운영 단일 사용자 부하).
+# fire-and-forget — submit 후 future 무시 (graceful, 실패 시 _persist_to_db_sync 가 swallow).
+_persist_executor: ThreadPoolExecutor | None = None
+_persist_executor_lock = threading.Lock()
+
+
+def _get_persist_executor() -> ThreadPoolExecutor:
+    """lazy init — 첫 비동기 persist 시점에만 worker 생성."""
+    global _persist_executor
+    if _persist_executor is None:
+        with _persist_executor_lock:
+            if _persist_executor is None:
+                _persist_executor = ThreadPoolExecutor(
+                    max_workers=2, thread_name_prefix="vision-persist"
+                )
+    return _persist_executor
 
 _lock = threading.Lock()
 _total_calls: int = 0
@@ -130,15 +153,49 @@ def _persist_to_db(
     quota_exhausted: bool,
     source_type: str | None,
 ) -> None:
-    """vision_usage_log 테이블 insert. 실패는 log warning + swallow (호출자 영향 0).
+    """vision_usage_log 테이블 insert (비동기 dispatch).
+
+    JET_RAG_METRICS_PERSIST_ENABLED='0' 시 skip.
+    JET_RAG_METRICS_PERSIST_ASYNC='1' (default) 시 ThreadPoolExecutor 로 fire-and-forget
+    → 호출자 latency 영향 0 (W17 Day 4 한계 #88 회수).
+    JET_RAG_METRICS_PERSIST_ASYNC='0' 시 sync 호출 (단위 테스트 first-warn capture).
+    """
+    if os.environ.get(_PERSIST_ENV_KEY, "1") == "0":
+        return
+    if os.environ.get(_PERSIST_ASYNC_ENV_KEY, "1") == "0":
+        _persist_to_db_sync(
+            called_at=called_at,
+            success=success,
+            error_msg=error_msg,
+            quota_exhausted=quota_exhausted,
+            source_type=source_type,
+        )
+        return
+    _get_persist_executor().submit(
+        _persist_to_db_sync,
+        called_at=called_at,
+        success=success,
+        error_msg=error_msg,
+        quota_exhausted=quota_exhausted,
+        source_type=source_type,
+    )
+
+
+def _persist_to_db_sync(
+    *,
+    called_at: datetime,
+    success: bool,
+    error_msg: str | None,
+    quota_exhausted: bool,
+    source_type: str | None,
+) -> None:
+    """vision_usage_log 테이블 insert (sync). 실패는 log warning + swallow.
 
     마이그레이션 005 미적용 시 (테이블 부재) Supabase 가 PGRST 에러 → 본 함수 가 catch.
     그 후로도 호출은 이어서 시도 — 사용자가 005 적용하면 자연 회복.
 
-    JET_RAG_METRICS_PERSIST_ENABLED='0' 시 skip (단위 테스트 timeout 회피).
+    background thread (`_persist_executor`) 또는 sync path (env=0) 에서 호출됨.
     """
-    if os.environ.get(_PERSIST_ENV_KEY, "1") == "0":
-        return
     try:
         # lazy import — 단위 테스트가 supabase 의존성 없이도 동작 가능하도록
         from app.db import get_supabase_client
