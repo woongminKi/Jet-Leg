@@ -1483,6 +1483,50 @@ class StatsRouterE2ETest(E2EBaseTest):
         self.assertEqual(resp.search_slo.sample_count, 0)
         self.assertEqual(resp.vision_usage.total_calls, 0)
 
+    def test_ingest_slo_aggregate_weighted(self) -> None:
+        """W12 Day 2 — 5 SLO 버킷 가중 평균 KPI (§13.1)."""
+        from app.config import get_settings
+        from app.routers.stats import stats as stats_endpoint
+
+        user_id = get_settings().default_user_id
+
+        # hwp: 2 samples (1 pass + 1 fail) / image: 1 sample (pass)
+        self.fake_client._tables["documents"].extend([
+            {"id": "h1", "user_id": user_id, "doc_type": "hwp",
+             "source_channel": "drag-drop", "size_bytes": 1024, "flags": {},
+             "tags": [], "created_at": None, "received_ms": 1000,
+             "deleted_at": None},
+            {"id": "h2", "user_id": user_id, "doc_type": "hwp",
+             "source_channel": "drag-drop", "size_bytes": 1024, "flags": {},
+             "tags": [], "created_at": None, "received_ms": 3000,
+             "deleted_at": None},
+            {"id": "i1", "user_id": user_id, "doc_type": "image",
+             "source_channel": "drag-drop", "size_bytes": 512, "flags": {},
+             "tags": [], "created_at": None, "received_ms": 1500,
+             "deleted_at": None},
+        ])
+
+        resp = stats_endpoint()
+
+        # hwp: pass_rate=0.5 × 2 + image: pass_rate=1.0 × 1 → (1+1)/3 ≈ 0.6667
+        self.assertEqual(resp.ingest_slo_aggregate.total_samples, 3)
+        self.assertAlmostEqual(
+            resp.ingest_slo_aggregate.overall_pass_rate, 0.6667, places=3
+        )
+        self.assertEqual(
+            sorted(resp.ingest_slo_aggregate.buckets_with_samples),
+            ["hwp", "image"],
+        )
+
+    def test_ingest_slo_aggregate_no_samples(self) -> None:
+        """received_ms 측정 0건 → overall_pass_rate=None."""
+        from app.routers.stats import stats as stats_endpoint
+
+        resp = stats_endpoint()
+        self.assertEqual(resp.ingest_slo_aggregate.total_samples, 0)
+        self.assertIsNone(resp.ingest_slo_aggregate.overall_pass_rate)
+        self.assertEqual(resp.ingest_slo_aggregate.buckets_with_samples, [])
+
 
 # ====================================================================
 # S10 — extract HWPML 분기 (W11 Day 2 — 한계 #59)

@@ -88,6 +88,21 @@ class SearchSloStats(BaseModel):
     cache_hit_rate: float | None = None
 
 
+class IngestSloAggregate(BaseModel):
+    """W12 Day 2 — 인제스트 SLO 달성률 KPI (기획서 §13.1).
+
+    5 SLO 버킷 (pdf_50p · image · pdf_scan · hwp · url) 의 sample_count 가중 평균.
+    각 버킷 pass_rate (received_ms < 2000) 를 sample 수로 가중.
+
+    - total_samples: 5 버킷 sample_count 합 (received_ms 측정된 docs)
+    - overall_pass_rate: 가중 평균 — sample 0건이면 None
+    - buckets_with_samples: sample > 0 인 버킷 이름 리스트 (KPI 측정 가능 버킷)
+    """
+    total_samples: int
+    overall_pass_rate: float | None
+    buckets_with_samples: list[str]
+
+
 class VisionUsageStats(BaseModel):
     """W8 Day 4 — Vision API 호출 누적 카운트 (한계 #29).
     W11 Day 1 — last_quota_exhausted_at 추가 (한계 #38 lite).
@@ -123,6 +138,7 @@ class StatsResponse(BaseModel):
     jobs: JobsStats
     popular_tags: list[TagCount]  # 사용 빈도 top-10
     slo_buckets: dict[str, SloBucketStats]  # W2 §3.A: pdf_50p · image · pdf_scan · hwp · url
+    ingest_slo_aggregate: IngestSloAggregate  # W12 Day 2 — 5 버킷 가중 평균 (KPI §13.1)
     search_slo: SearchSloStats  # W3 Day 2 Phase 3 — `/search` p50/p95/fallback 분포
     vision_usage: VisionUsageStats  # W8 Day 4 — Gemini Vision 호출 카운트 (한계 #29)
     generated_at: str
@@ -213,6 +229,7 @@ def stats() -> StatsResponse:
     # SLO 버킷 — failed 포함 all_docs 기준. received_ms 는 수신 단계 SLO 만 반영하므로
     # 파이프라인 단계 실패 doc 도 receive 자체는 성공한 유효 sample.
     slo_buckets = _compute_slo_buckets(all_docs)
+    ingest_slo_aggregate = _compute_slo_aggregate(slo_buckets)
 
     # `/search` ring buffer — 외부 IO 0, 락 짧게 잡고 스냅샷만 계산.
     search_slo = SearchSloStats(**search_metrics.get_search_slo())
@@ -240,6 +257,7 @@ def stats() -> StatsResponse:
         ),
         popular_tags=popular_tags,
         slo_buckets=slo_buckets,
+        ingest_slo_aggregate=ingest_slo_aggregate,
         search_slo=search_slo,
         vision_usage=vision_usage,
         generated_at=datetime.now(timezone.utc).isoformat(),
@@ -326,6 +344,32 @@ def _compute_slo_buckets(docs: list[dict]) -> dict[str, SloBucketStats]:
             buckets["url"].append(ms)
 
     return {name: _bucket_stats(samples) for name, samples in buckets.items()}
+
+
+def _compute_slo_aggregate(
+    slo_buckets: dict[str, SloBucketStats],
+) -> IngestSloAggregate:
+    """W12 Day 2 — 5 SLO 버킷 sample_count 가중 평균 (기획서 §13.1).
+
+    각 버킷의 pass_rate × sample_count → 합 / total_samples.
+    sample 0건 버킷은 가중 평균에서 제외.
+    """
+    weighted_sum = 0.0
+    total_samples = 0
+    buckets_with_samples: list[str] = []
+    for name, bucket in slo_buckets.items():
+        if bucket.sample_count > 0 and bucket.pass_rate is not None:
+            weighted_sum += bucket.pass_rate * bucket.sample_count
+            total_samples += bucket.sample_count
+            buckets_with_samples.append(name)
+    overall = (
+        round(weighted_sum / total_samples, 4) if total_samples > 0 else None
+    )
+    return IngestSloAggregate(
+        total_samples=total_samples,
+        overall_pass_rate=overall,
+        buckets_with_samples=buckets_with_samples,
+    )
 
 
 def _bucket_stats(samples: list[int]) -> SloBucketStats:
