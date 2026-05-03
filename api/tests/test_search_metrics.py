@@ -158,5 +158,37 @@ class ByModeSplitTest(unittest.TestCase):
         self.assertIsNone(slo["by_mode"]["sparse"]["cache_hit_rate"])
 
 
+class SearchMetricsFirstWarnPatternTest(unittest.TestCase):
+    """W17 Day 3 한계 #85 — search_metrics _persist_to_db 첫 실패만 warn."""
+
+    def setUp(self) -> None:
+        search_metrics.reset()  # _first_persist_warn_logged 도 False 로 reset
+
+    def test_first_failure_logs_warning(self) -> None:
+        from unittest.mock import patch
+        import os as _os
+        import datetime as _dt
+
+        _os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        try:
+            with patch(
+                "app.db.get_supabase_client",
+                side_effect=RuntimeError("DB down"),
+            ), self.assertLogs("app.services.search_metrics", level="WARNING") as cm:
+                search_metrics._persist_to_db(
+                    recorded_at=_dt.datetime.now(_dt.timezone.utc),
+                    event={
+                        "took_ms": 100, "dense_hits": 1, "sparse_hits": 1,
+                        "fused": 1, "has_dense": True, "fallback_reason": None,
+                        "embed_cache_hit": False, "mode": "hybrid",
+                    },
+                    query_text=None,
+                )
+            self.assertEqual(len(cm.records), 1)
+            self.assertIn("첫 실패", cm.records[0].getMessage())
+        finally:
+            _os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+
+
 if __name__ == "__main__":
     unittest.main()

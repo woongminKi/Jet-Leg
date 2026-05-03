@@ -268,6 +268,76 @@ class PersistGracefulTest(unittest.TestCase):
             os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
 
 
+class FirstWarnPatternTest(unittest.TestCase):
+    """W17 Day 3 한계 #85 — _persist_to_db 첫 실패만 warn, 이후는 debug."""
+
+    def setUp(self) -> None:
+        from app.services import vision_metrics
+        vision_metrics.reset()  # _first_persist_warn_logged 도 False 로 reset
+
+    def test_first_failure_logs_warning(self) -> None:
+        from app.services import vision_metrics
+        from unittest.mock import patch
+        import datetime as _dt
+
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        try:
+            with patch(
+                "app.db.get_supabase_client",
+                side_effect=RuntimeError("DB down"),
+            ), self.assertLogs("app.services.vision_metrics", level="WARNING") as cm:
+                vision_metrics._persist_to_db(
+                    called_at=_dt.datetime.now(_dt.timezone.utc),
+                    success=True,
+                    error_msg=None,
+                    quota_exhausted=False,
+                    source_type="image",
+                )
+            # 첫 호출 → warning 1건
+            self.assertEqual(len(cm.records), 1)
+            self.assertIn("첫 실패", cm.records[0].getMessage())
+        finally:
+            os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+
+    def test_subsequent_failures_log_debug_not_warning(self) -> None:
+        from app.services import vision_metrics
+        from unittest.mock import patch
+        import datetime as _dt
+
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        try:
+            with patch(
+                "app.db.get_supabase_client",
+                side_effect=RuntimeError("DB down"),
+            ):
+                # 첫 호출 (flag set)
+                vision_metrics._persist_to_db(
+                    called_at=_dt.datetime.now(_dt.timezone.utc),
+                    success=True, error_msg=None,
+                    quota_exhausted=False, source_type="image",
+                )
+                # 두 번째 호출 — warning 발생 안 해야 함
+                with self.assertLogs(
+                    "app.services.vision_metrics", level="WARNING"
+                ) as cm2:
+                    # 비어있는 capture 보장 위해 더미 warning 발생 후 길이 확인
+                    import logging
+                    vision_metrics._persist_to_db(
+                        called_at=_dt.datetime.now(_dt.timezone.utc),
+                        success=True, error_msg=None,
+                        quota_exhausted=False, source_type="image",
+                    )
+                    # 본 호출은 warning 0 — 비어있는 capture 회피 위해 sentinel 1건 추가
+                    logging.getLogger("app.services.vision_metrics").warning(
+                        "sentinel"
+                    )
+                # capture 안 의 warning 은 sentinel 1건만
+                self.assertEqual(len(cm2.records), 1)
+                self.assertEqual(cm2.records[0].getMessage(), "sentinel")
+        finally:
+            os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+
+
 class SourceTypeNormalizationTest(unittest.TestCase):
     """W16 Day 4 한계 #90 — source_type enum 강제."""
 

@@ -40,6 +40,11 @@ _last_quota_exhausted_at: datetime | None = None  # W11 Day 1 — 한계 #38 lit
 _ERROR_MSG_MAX_LEN_ENV_KEY = "JET_RAG_VISION_ERROR_MSG_MAX_LEN"
 _ERROR_MSG_MAX_LEN_DEFAULT = 200
 
+# W17 Day 3 한계 #85 — DB write-through 첫 1회만 warn (이후는 debug 로그).
+# 마이그레이션 005 미적용 운영 환경에서 한 번만 명시 알림 → 사용자 인지 + 로그 노이즈 방지.
+# 모듈 레벨 단순 bool flag — race 발생해도 warn 이 두 번 찍히는 정도 (정합성 영향 0).
+_first_persist_warn_logged: bool = False
+
 # W16 Day 4 한계 #90 — source_type enum 강제. 잘못된 값은 None 으로 fallback.
 # 005 schema 의 source_type 컬럼은 자유 TEXT 이나, DB row 의미 일관성 유지 위해 모듈 레벨 검증.
 _VALID_SOURCE_TYPES: frozenset[str] = frozenset(
@@ -149,7 +154,17 @@ def _persist_to_db(
             }
         ).execute()
     except Exception as exc:  # noqa: BLE001 — DB 부재 / 마이그레이션 미적용 graceful
-        logger.debug("vision_usage_log insert skip (graceful): %s", exc)
+        # W17 Day 3 #85 — 첫 1회만 warn, 이후는 debug (로그 노이즈 방지)
+        global _first_persist_warn_logged
+        if not _first_persist_warn_logged:
+            _first_persist_warn_logged = True
+            logger.warning(
+                "vision_usage_log insert 첫 실패 — graceful skip 진입. "
+                "마이그레이션 005 적용 후 재시작 시 자동 회복. (cause: %s)",
+                exc,
+            )
+        else:
+            logger.debug("vision_usage_log insert skip (graceful): %s", exc)
 
 
 def get_usage() -> dict:
@@ -171,12 +186,14 @@ def get_usage() -> dict:
 
 
 def reset() -> None:
-    """테스트용 — 카운터 초기화."""
+    """테스트용 — 카운터 + first-warn flag 초기화."""
     global _total_calls, _success_calls, _error_calls
     global _last_called_at, _last_quota_exhausted_at
+    global _first_persist_warn_logged
     with _lock:
         _total_calls = 0
         _success_calls = 0
         _error_calls = 0
         _last_called_at = None
         _last_quota_exhausted_at = None
+        _first_persist_warn_logged = False

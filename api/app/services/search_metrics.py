@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 # W15 Day 3 — DB write-through env (vision_metrics 와 동일).
 _PERSIST_ENV_KEY = "JET_RAG_METRICS_PERSIST_ENABLED"
 
+# W17 Day 3 한계 #85 — DB write-through 첫 1회만 warn (이후는 debug 로그).
+# 마이그레이션 006 미적용 운영 환경에서 한 번만 명시 알림 → 사용자 인지 + 로그 노이즈 방지.
+_first_persist_warn_logged: bool = False
+
 # 운영 부하 단일 사용자 환경 — 최근 500건이면 5분 분량 (10 QPS 가정).
 # 늘릴 때는 메모리 영향 검토 (이벤트 1건 ≈ 200B → 500건 ≈ 100KB).
 _RING_MAXLEN = 500
@@ -132,7 +136,17 @@ def _persist_to_db(
             }
         ).execute()
     except Exception as exc:  # noqa: BLE001 — DB 부재 / 마이그레이션 미적용 graceful
-        logger.debug("search_metrics_log insert skip (graceful): %s", exc)
+        # W17 Day 3 #85 — 첫 1회만 warn, 이후는 debug
+        global _first_persist_warn_logged
+        if not _first_persist_warn_logged:
+            _first_persist_warn_logged = True
+            logger.warning(
+                "search_metrics_log insert 첫 실패 — graceful skip 진입. "
+                "마이그레이션 006 적용 후 재시작 시 자동 회복. (cause: %s)",
+                exc,
+            )
+        else:
+            logger.debug("search_metrics_log insert skip (graceful): %s", exc)
 
 
 def get_search_slo() -> dict:
@@ -211,9 +225,11 @@ def _compute_slo_for(samples: list[dict]) -> dict:
 
 
 def reset() -> None:
-    """테스트 전용 — ring buffer 비움. 운영 코드에서 호출하지 말 것."""
+    """테스트 전용 — ring buffer + first-warn flag 비움. 운영 코드에서 호출하지 말 것."""
+    global _first_persist_warn_logged
     with _lock:
         _ring.clear()
+        _first_persist_warn_logged = False
 
 
 # ---------------------- helpers ----------------------
