@@ -41,6 +41,9 @@ _MAX_MATCHED_CHUNKS_PER_DOC = 3
 _SNIPPET_AROUND = 80
 _RRF_K = 60
 _RPC_TOP_K = 50  # RPC 의 dense / sparse path 각각 상위 K
+# W19 Day 2 한계 #75 — mode=dense/sparse 응용 layer 필터 후 부족 방지 cap.
+# hybrid (default) 는 _RPC_TOP_K, mode 필터 시 2배 pre-allocate (latency 영향 미미).
+_RPC_TOP_K_ABLATION = 100
 # 001_init.sql 의 doc_type CHECK 제약과 동일 — 화이트리스트 검증용
 _DOC_TYPES = {"pdf", "hwp", "hwpx", "docx", "pptx", "image", "url", "txt", "md"}
 # 503 응답의 Retry-After 헤더 — RFC 7231. HF cold start (5~20s) + 안전 마진.
@@ -225,6 +228,8 @@ def search(
     # ------------------------------------------------------------------
     # 2) 검색 (dense 성공 시 RPC, 실패 시 sparse-only)
     # ------------------------------------------------------------------
+    # W19 Day 2 한계 #75 — mode=dense/sparse 응용 layer 필터 시 부족 방지 cap.
+    rpc_top_k = _RPC_TOP_K_ABLATION if mode in ("dense", "sparse") else _RPC_TOP_K
     if dense_vec is not None:
         rpc_resp = client.rpc(
             "search_hybrid_rrf",
@@ -232,13 +237,13 @@ def search(
                 "query_text": clean_q,
                 "query_dense": dense_vec,
                 "k_rrf": _RRF_K,
-                "top_k": _RPC_TOP_K,
+                "top_k": rpc_top_k,
                 "user_id_arg": str(user_id),
             },
         ).execute()
         rpc_rows = rpc_resp.data or []
     else:
-        rpc_rows = _sparse_only_fallback(client, clean_q, user_id, _RPC_TOP_K)
+        rpc_rows = _sparse_only_fallback(client, clean_q, user_id, rpc_top_k)
 
     # W11 Day 4 — 단일 문서 스코프 (US-08): RPC 결과 중 해당 doc_id 만 보존.
     # 응용 layer 필터 — RPC 결과 N 개 중 doc_id 일치만 통과 → 자연스럽게 dense·sparse·fused 카운트도 갱신.

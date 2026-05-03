@@ -259,5 +259,47 @@ class SearchModeAblationTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
 
+class RpcTopKAblationCapTest(unittest.TestCase):
+    """W19 Day 2 한계 #75 — mode=dense/sparse 시 RPC top_k 2배 (응용 layer 필터 부족 방지)."""
+
+    def _provider_mock(self):
+        provider_mock = MagicMock()
+        provider_mock.embed_query.return_value = [0.0] * 1024
+        provider_mock._last_cache_hit = False
+        return provider_mock
+
+    def _execute_with_mode(self, mode: str) -> int:
+        """mode 인자로 search 호출 후 RPC 호출 시 사용된 top_k 반환."""
+        from app.routers import search as search_module
+
+        client_mock = _client_with_rpc_rows([])
+        with patch.object(
+            search_module, "get_bgem3_provider", return_value=self._provider_mock()
+        ), patch.object(
+            search_module, "get_supabase_client", return_value=client_mock
+        ):
+            search_module.search(
+                q="t", limit=10, offset=0, tags=None, doc_type=None,
+                from_date=None, to_date=None, doc_id=None, mode=mode,
+            )
+        # client.rpc("search_hybrid_rrf", {..., "top_k": N, ...}) 호출 인자 추출
+        call = client_mock.rpc.call_args
+        args, kwargs = call
+        rpc_args = args[1] if len(args) >= 2 else kwargs.get("params", {})
+        return int(rpc_args["top_k"])
+
+    def test_hybrid_uses_default_top_k(self) -> None:
+        from app.routers.search import _RPC_TOP_K
+        self.assertEqual(self._execute_with_mode("hybrid"), _RPC_TOP_K)
+
+    def test_dense_uses_ablation_top_k(self) -> None:
+        from app.routers.search import _RPC_TOP_K_ABLATION
+        self.assertEqual(self._execute_with_mode("dense"), _RPC_TOP_K_ABLATION)
+
+    def test_sparse_uses_ablation_top_k(self) -> None:
+        from app.routers.search import _RPC_TOP_K_ABLATION
+        self.assertEqual(self._execute_with_mode("sparse"), _RPC_TOP_K_ABLATION)
+
+
 if __name__ == "__main__":
     unittest.main()
