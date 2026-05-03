@@ -146,15 +146,42 @@ function ChunkDebugPanel({
             metadata
           </div>
           {metaKeys.map((k) => (
-            <div key={k} className="flex gap-2 pl-3">
-              <span className="shrink-0 w-30 font-semibold text-foreground/85">
-                {k}
-              </span>
-              <span className="break-all">{JSON.stringify(meta[k])}</span>
-            </div>
+            <MetaRow key={k} k={k} value={meta[k]} />
           ))}
         </>
       )}
+    </div>
+  );
+}
+
+function MetaRow({ k, value }: { k: string; value: unknown }) {
+  // W10 Day 3 (한계 #17) — nested object/array 는 indent 2 + pre-wrap 으로 시인성↑
+  // primitive 는 한 줄 (이전 동작 유지)
+  const isComplex =
+    (typeof value === 'object' && value !== null) || Array.isArray(value);
+  const formatted = isComplex
+    ? JSON.stringify(value, null, 2)
+    : JSON.stringify(value);
+  return (
+    <div className={isComplex ? 'pl-3' : 'flex gap-2 pl-3'}>
+      <span
+        className={
+          isComplex
+            ? 'block font-semibold text-foreground/85'
+            : 'shrink-0 w-30 font-semibold text-foreground/85'
+        }
+      >
+        {k}
+      </span>
+      <span
+        className={
+          isComplex
+            ? 'block whitespace-pre-wrap break-all rounded bg-muted/40 px-1.5 py-0.5 text-[10px]'
+            : 'break-all'
+        }
+      >
+        {formatted}
+      </span>
     </div>
   );
 }

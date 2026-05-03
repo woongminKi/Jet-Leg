@@ -1398,10 +1398,9 @@ class StatsRouterE2ETest(E2EBaseTest):
 
     def setUp(self) -> None:
         super().setUp()
-        # in-memory metrics reset — 이전 테스트 영향 차단
+        # in-memory metrics reset — 이전 테스트 영향 차단 (W10 Day 3 한계 #61 회수)
         from app.services import search_metrics, vision_metrics
-        # search_metrics 는 직접 리셋 API 가 없어 deque clear (구현 디테일).
-        search_metrics._ring.clear()  # noqa: SLF001 — 테스트 시점 격리
+        search_metrics.reset()
         vision_metrics.reset()
 
     def test_stats_aggregates_documents_chunks_jobs(self) -> None:
