@@ -118,6 +118,15 @@ class _FakeTableQuery:
         self._filters.append(("in", col, values))
         return self
 
+    def neq(self, col: str, value: Any) -> "_FakeTableQuery":
+        self._filters.append(("neq", col, value))
+        return self
+
+    @property
+    def not_(self) -> "_FakeTableQueryNot":
+        """supabase-py 의 `.not_.is_(col, val)` 체인 흉내 — 다음 호출을 negate 한다."""
+        return _FakeTableQueryNot(self)
+
     def order(self, col: str, *, desc: bool = False) -> "_FakeTableQuery":
         self._order = (col, desc)
         return self
@@ -223,6 +232,9 @@ class _FakeTableQuery:
             if op == "eq":
                 if row.get(col) != value:
                     return False
+            elif op == "neq":
+                if row.get(col) == value:
+                    return False
             elif op == "is":
                 # supabase-py 는 `.is_("col", "null")` 또는 `.is_("col", None)` 둘 다 사용.
                 if value in ("null", None):
@@ -231,10 +243,29 @@ class _FakeTableQuery:
                 else:
                     if row.get(col) != value:
                         return False
+            elif op == "not_is":
+                # `.not_.is_("col", "null")` — IS NOT NULL
+                if value in ("null", None):
+                    if row.get(col) is None:
+                        return False
+                else:
+                    if row.get(col) == value:
+                        return False
             elif op == "in":
                 if row.get(col) not in value:
                     return False
         return True
+
+
+class _FakeTableQueryNot:
+    """supabase-py 의 `.not_` accessor — 다음 메서드 호출을 negate 한 filter 로 등록."""
+
+    def __init__(self, parent: "_FakeTableQuery") -> None:
+        self._parent = parent
+
+    def is_(self, col: str, value: Any) -> "_FakeTableQuery":
+        self._parent._filters.append(("not_is", col, value))
+        return self._parent
 
 
 class FakeSupabaseClient:
@@ -285,6 +316,7 @@ class FakeBGEM3Provider:
 
     def __init__(self) -> None:
         self.embed_batch_calls: list[list[str]] = []
+        self.embed_calls: list[str] = []
 
     def embed_batch(self, texts: list[str]) -> list:
         from app.adapters.embedding import EmbeddingResult
@@ -296,6 +328,14 @@ class FakeBGEM3Provider:
             seed = 0.001 * (i + 1)
             out.append(EmbeddingResult(dense=[seed] * 1024, sparse={}))
         return out
+
+    def embed(self, text: str):
+        """단건 embed (doc_embed stage 가 사용). dense=[len(text)/1000]*1024 결정성."""
+        from app.adapters.embedding import EmbeddingResult
+
+        self.embed_calls.append(text)
+        seed = max(0.001, min(1.0, len(text) / 1000))
+        return EmbeddingResult(dense=[seed] * 1024, sparse={})
 
 
 # ====================================================================
@@ -420,6 +460,22 @@ class E2EBaseTest(unittest.TestCase):
             ),
             patch(
                 "app.ingest.stages.content_gate.get_supabase_client",
+                return_value=self.fake_client,
+            ),
+            patch(
+                "app.ingest.stages.doc_embed.get_supabase_client",
+                return_value=self.fake_client,
+            ),
+            patch(
+                "app.ingest.stages.doc_embed.get_bgem3_provider",
+                return_value=self.fake_provider,
+            ),
+            patch(
+                "app.ingest.stages.dedup.get_supabase_client",
+                return_value=self.fake_client,
+            ),
+            patch(
+                "app.ingest.stages.tag_summarize.get_supabase_client",
                 return_value=self.fake_client,
             ),
         ]
@@ -784,6 +840,226 @@ class ContentGateTest(E2EBaseTest):
         self.assertTrue(merged["has_watermark"])
         self.assertFalse(merged["third_party"])
         self.assertEqual(merged["watermark_hits"], ["대외비"])
+
+
+# ====================================================================
+# S5 — doc_embed stage (summary + raw_text fallback)
+# ====================================================================
+
+
+class DocEmbedTest(E2EBaseTest):
+    """S5 — `summary` 가 있으면 그것을 source 로 embed, 없으면 raw_text[:3000].
+
+    검증 포인트
+    - summary 우선: documents.summary 가 있으면 embed source 가 summary+implications join
+    - raw_text fallback: summary NULL 일 때 raw_text 사용
+    - 둘 다 없으면 skip (return False, doc_embedding 미갱신)
+    """
+
+    def test_summary_used_as_source(self) -> None:
+        from app.ingest.stages.doc_embed import run_doc_embed_stage
+
+        job_id, doc_id = "job-s5a", "doc-s5a"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "summary": "요약 본문 1줄",
+            "implications": "함의 1줄",
+            "doc_embedding": None,
+        })
+        extraction = _make_extraction([("raw text 본문", None)])
+
+        ok = run_doc_embed_stage(job_id, doc_id=doc_id, extraction=extraction)
+
+        self.assertTrue(ok)
+        # embed 호출 인자 — summary + implications join
+        self.assertEqual(len(self.fake_provider.embed_calls), 1)
+        source = self.fake_provider.embed_calls[0]
+        self.assertIn("요약 본문 1줄", source)
+        self.assertIn("함의 1줄", source)
+
+        # doc_embedding 갱신 확인
+        doc_row = self.fake_client._tables["documents"][0]
+        self.assertEqual(len(doc_row["doc_embedding"]), 1024)
+
+    def test_raw_text_fallback_when_no_summary(self) -> None:
+        from app.ingest.stages.doc_embed import run_doc_embed_stage
+
+        job_id, doc_id = "job-s5b", "doc-s5b"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "summary": None,
+            "implications": None,
+            "doc_embedding": None,
+        })
+        extraction = _make_extraction([("raw 본문 텍스트만 존재", None)])
+
+        ok = run_doc_embed_stage(job_id, doc_id=doc_id, extraction=extraction)
+
+        self.assertTrue(ok)
+        source = self.fake_provider.embed_calls[0]
+        self.assertIn("raw 본문 텍스트만 존재", source)
+
+    def test_skip_when_no_source(self) -> None:
+        from app.ingest.stages.doc_embed import run_doc_embed_stage
+
+        job_id, doc_id = "job-s5c", "doc-s5c"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "summary": None,
+            "implications": None,
+            "doc_embedding": None,
+        })
+        extraction = _make_extraction([])  # raw_text 빈 문자열
+
+        ok = run_doc_embed_stage(job_id, doc_id=doc_id, extraction=extraction)
+
+        self.assertFalse(ok)
+        self.assertEqual(len(self.fake_provider.embed_calls), 0)
+
+
+# ====================================================================
+# S6 — dedup stage (Tier 2 cosine ≥0.95)
+# ====================================================================
+
+
+class DedupTier2Test(E2EBaseTest):
+    """S6 — 두 doc 의 doc_embedding 이 거의 동일 (cosine 1.0) → Tier 2 마킹.
+
+    - my_doc 과 candidate 의 doc_embedding 모두 [1, 0, 0, ..., 0] (1024 dim)
+    - cosine(a, b) = 1.0 → ≥ 0.95 → Tier 2
+    - flags.duplicate_tier=2 + duplicate_of=candidate_id + duplicate_similarity=1.0
+    """
+
+    def test_tier2_match_marks_flags(self) -> None:
+        from app.ingest.stages.dedup import run_dedup_stage
+        from app.config import get_settings
+
+        user_id = get_settings().default_user_id
+        job_id, my_id, other_id = "job-s6", "doc-s6-me", "doc-s6-other"
+        _seed_job(self.fake_client, job_id, my_id)
+
+        unit_vec = [1.0] + [0.0] * 1023  # 1024 dim
+        self.fake_client._tables["documents"].extend([
+            {
+                "id": my_id,
+                "user_id": user_id,
+                "title": "보고서",
+                "storage_path": "default/report.pdf",
+                "doc_embedding": unit_vec,
+                "deleted_at": None,
+                "flags": {},
+            },
+            {
+                "id": other_id,
+                "user_id": user_id,
+                "title": "보고서",
+                "storage_path": "default/report.pdf",
+                "doc_embedding": unit_vec,  # 동일 벡터 → cosine 1.0
+                "deleted_at": None,
+                "flags": {},
+            },
+        ])
+
+        match = run_dedup_stage(job_id, doc_id=my_id)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["duplicate_tier"], 2)
+        self.assertEqual(match["duplicate_of"], other_id)
+        self.assertGreaterEqual(match["duplicate_similarity"], 0.95)
+
+        # documents flags 갱신 확인
+        my_row = next(
+            r for r in self.fake_client._tables["documents"] if r["id"] == my_id
+        )
+        self.assertEqual(my_row["flags"]["duplicate_tier"], 2)
+        self.assertEqual(my_row["flags"]["duplicate_of"], other_id)
+
+
+# ====================================================================
+# S7 — tag_summarize stage (LLM mock, graceful fail)
+# ====================================================================
+
+
+class TagSummarizeGracefulTest(E2EBaseTest):
+    """S7 — LLM 호출 실패해도 graceful (documents 의 tags/summary NULL 유지)."""
+
+    def test_llm_failure_is_swallowed(self) -> None:
+        from app.ingest.stages import tag_summarize
+
+        job_id, doc_id = "job-s7a", "doc-s7a"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "tags": [],
+            "summary": None,
+            "implications": None,
+            "flags": {},
+        })
+        extraction = _make_extraction([("본문 텍스트입니다.", None)])
+
+        # _llm.complete 가 항상 raise — graceful 검증
+        with patch.object(
+            tag_summarize._llm,
+            "complete",
+            side_effect=RuntimeError("LLM API down"),
+        ):
+            tag_summarize.run_tag_summarize_stage(
+                job_id, doc_id=doc_id, extraction=extraction
+            )
+
+        # raise 없이 통과 (graceful). DB 의 tags/summary 는 그대로 빈 값.
+        doc_row = self.fake_client._tables["documents"][0]
+        self.assertEqual(doc_row.get("tags"), [])
+        self.assertIsNone(doc_row.get("summary"))
+
+    def test_llm_success_persists_tags_and_summary(self) -> None:
+        from app.ingest.stages import tag_summarize
+        import json
+
+        job_id, doc_id = "job-s7b", "doc-s7b"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "tags": [],
+            "summary": None,
+            "implications": None,
+            "flags": {},
+        })
+        extraction = _make_extraction([("계약·합의 본문", None)])
+
+        # _call_tags 와 _call_summary 가 _llm.complete 두 번 호출 — 응답 시퀀스 부여.
+        responses = [
+            json.dumps({
+                "topic_tags": ["계약", "합의"],
+                "entity_tags": ["갑", "을"],
+                "document_type": "보고서",
+                "time_reference": "2025-01",
+            }),
+            json.dumps({
+                "summary_3line": "1줄 요약\n2줄 요약\n3줄 요약",
+                "implications": "본 문서의 함의",
+            }),
+        ]
+        with patch.object(
+            tag_summarize._llm,
+            "complete",
+            side_effect=responses,
+        ):
+            tag_summarize.run_tag_summarize_stage(
+                job_id, doc_id=doc_id, extraction=extraction
+            )
+
+        doc_row = self.fake_client._tables["documents"][0]
+        # tags = topic_tags + entity_tags 합집합 (순서 유지)
+        self.assertEqual(doc_row["tags"], ["계약", "합의", "갑", "을"])
+        self.assertEqual(doc_row["summary"], "1줄 요약\n2줄 요약\n3줄 요약")
+        self.assertEqual(doc_row["implications"], "본 문서의 함의")
+        # flags 에 document_type / time_reference 머지
+        self.assertEqual(doc_row["flags"]["document_type"], "보고서")
+        self.assertEqual(doc_row["flags"]["time_reference"], "2025-01")
 
 
 if __name__ == "__main__":
