@@ -1673,7 +1673,7 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
         # ImageParser.parse mock — page 단위 호출 카운트
         parse_calls: list[str] = []
 
-        def _mock_image_parse(self_unused, data, *, file_name, source_type=None):
+        def _mock_image_parse(data, *, file_name, source_type=None):
             parse_calls.append(file_name)
             return ExtractionResult(
                 source_type="image",
@@ -1691,7 +1691,7 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
 
         with patch.object(extract_mod, "SupabaseBlobStorage", _FakeStorage), \
                 patch.object(
-                    type(extract_mod._image_parser), "parse", _mock_image_parse
+                    extract_mod._image_parser, "parse", _mock_image_parse
                 ):
             result = extract_mod.run_extract_stage(job_id, doc_id)
 
@@ -1748,7 +1748,7 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
 
         parse_calls: list[str] = []
 
-        def _mock_image_parse(self_unused, data, *, file_name, source_type=None):
+        def _mock_image_parse(data, *, file_name, source_type=None):
             parse_calls.append(file_name)
             return ExtractionResult(
                 source_type="image",
@@ -1766,7 +1766,7 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
 
         with patch.object(extract_mod, "SupabaseBlobStorage", _FakeStorage), \
                 patch.object(
-                    type(extract_mod._image_parser), "parse", _mock_image_parse
+                    extract_mod._image_parser, "parse", _mock_image_parse
                 ):
             result = extract_mod.run_extract_stage(job_id, doc_id)
 
