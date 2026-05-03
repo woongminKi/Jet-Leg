@@ -8,12 +8,13 @@ import { ResultCard } from '@/components/jet-rag/result-card';
 import { Badge } from '@/components/ui/badge';
 
 interface SearchPageProps {
-  searchParams: Promise<{ q?: string }>;
+  searchParams: Promise<{ q?: string; debug?: string }>;
 }
 
 export default async function SearchPage({ searchParams }: SearchPageProps) {
-  const { q } = await searchParams;
+  const { q, debug: debugParam } = await searchParams;
   const query = (q ?? '').trim();
+  const debug = debugParam === '1';
 
   if (!query) {
     redirect('/');
@@ -31,6 +32,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
         total={response.total}
         tookMs={response.took_ms}
         queryParsed={response.query_parsed}
+        debug={debug}
       />
       <div className="container mx-auto px-4 py-6 md:px-6">
         <div className="grid gap-6 lg:grid-cols-[260px_1fr]">
@@ -41,7 +43,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
             ) : (
               <div className="space-y-4">
                 {response.items.map((hit) => (
-                  <ResultCard key={hit.doc_id} hit={hit} />
+                  <ResultCard key={hit.doc_id} hit={hit} debug={debug} />
                 ))}
               </div>
             )}

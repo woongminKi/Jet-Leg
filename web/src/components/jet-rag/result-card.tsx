@@ -8,9 +8,11 @@ import { formatRelativeTime } from '@/lib/format';
 
 interface ResultCardProps {
   hit: SearchHit;
+  /** W7 Day 4 — true 시 chunk 별 raw metadata 패널 펼쳐 디버깅 가시성 ↑. */
+  debug?: boolean;
 }
 
-export function ResultCard({ hit }: ResultCardProps) {
+export function ResultCard({ hit, debug = false }: ResultCardProps) {
   const moreCount = Math.max(0, hit.matched_chunk_count - hit.matched_chunks.length);
   const relevancePct = Math.round(hit.relevance * 100);
 
@@ -93,6 +95,7 @@ export function ResultCard({ hit }: ResultCardProps) {
                 <p className="leading-relaxed text-foreground/90">
                   <Highlighted text={chunk.text} ranges={chunk.highlight} />
                 </p>
+                {debug && <ChunkDebugPanel chunk={chunk} />}
               </li>
             );
           })}
@@ -105,5 +108,47 @@ export function ResultCard({ hit }: ResultCardProps) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function ChunkDebugPanel({
+  chunk,
+}: {
+  chunk: SearchHit['matched_chunks'][number];
+}) {
+  const meta = chunk.metadata ?? {};
+  const rows: Array<[string, string]> = [
+    ['chunk_id', chunk.chunk_id],
+    ['chunk_idx', String(chunk.chunk_idx)],
+    ['page', chunk.page === null ? 'null' : String(chunk.page)],
+    ['section_title', chunk.section_title ?? 'null'],
+    [
+      'rrf_score',
+      typeof chunk.rrf_score === 'number' ? chunk.rrf_score.toFixed(6) : 'null',
+    ],
+    ['highlight_ranges', JSON.stringify(chunk.highlight)],
+    ['text_len', String(chunk.text.length)],
+  ];
+  const metaKeys = Object.keys(meta);
+  return (
+    <div className="mt-2 space-y-1 rounded border border-dashed border-border bg-background/40 px-2 py-1.5 font-mono text-[10px] text-muted-foreground">
+      {rows.map(([k, v]) => (
+        <div key={k} className="flex gap-2">
+          <span className="shrink-0 w-32 text-foreground/70">{k}</span>
+          <span className="break-all">{v}</span>
+        </div>
+      ))}
+      {metaKeys.length > 0 && (
+        <>
+          <div className="pt-1 text-foreground/70">metadata</div>
+          {metaKeys.map((k) => (
+            <div key={k} className="flex gap-2 pl-2">
+              <span className="shrink-0 w-30 text-foreground/60">{k}</span>
+              <span className="break-all">{JSON.stringify(meta[k])}</span>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
   );
 }

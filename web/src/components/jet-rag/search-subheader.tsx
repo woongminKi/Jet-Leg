@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Search } from 'lucide-react';
+import { ArrowLeft, Bug, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -20,6 +20,8 @@ interface SearchSubheaderProps {
     fused: number;
     fallback_reason?: string | null;
   };
+  /** W7 Day 4 — debug 모드 ON 여부. 토글 시 ?debug=1 URL 갱신. */
+  debug?: boolean;
 }
 
 export function SearchSubheader({
@@ -27,6 +29,7 @@ export function SearchSubheader({
   total,
   tookMs,
   queryParsed,
+  debug = false,
 }: SearchSubheaderProps) {
   const router = useRouter();
   const [query, setQuery] = useState(initialQuery);
@@ -35,7 +38,17 @@ export function SearchSubheader({
     e.preventDefault();
     const trimmed = query.trim();
     if (!trimmed) return;
-    router.push(`/search?q=${encodeURIComponent(trimmed)}`);
+    const next = new URLSearchParams();
+    next.set('q', trimmed);
+    if (debug) next.set('debug', '1');
+    router.push(`/search?${next.toString()}`);
+  };
+
+  const toggleDebug = () => {
+    const next = new URLSearchParams();
+    next.set('q', initialQuery);
+    if (!debug) next.set('debug', '1');
+    router.push(`/search?${next.toString()}`);
   };
 
   return (
@@ -94,6 +107,21 @@ export function SearchSubheader({
             )}
           </div>
         )}
+        <Button
+          type="button"
+          variant={debug ? 'default' : 'ghost'}
+          size="icon"
+          onClick={toggleDebug}
+          aria-label={debug ? '디버그 끄기' : '디버그 켜기'}
+          title={
+            debug
+              ? '디버그 모드 ON — 클릭 시 OFF'
+              : '디버그 모드 OFF — chunk 메타·rrf·overlap 펼쳐 보기'
+          }
+          className="hidden md:inline-flex"
+        >
+          <Bug className="h-4 w-4" />
+        </Button>
       </div>
     </div>
   );
