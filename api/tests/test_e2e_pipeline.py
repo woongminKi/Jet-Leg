@@ -1484,5 +1484,187 @@ class StatsRouterE2ETest(E2EBaseTest):
         self.assertEqual(resp.vision_usage.total_calls, 0)
 
 
+# ====================================================================
+# S10 — extract HWPML 분기 (W11 Day 2 — 한계 #59)
+# ====================================================================
+
+
+class ExtractHwpmlTest(E2EBaseTest):
+    """S10 — doc_type='hwp' + raw bytes 가 HWPML XML prefix → HwpmlParser dispatch.
+
+    DE-39 패턴 (raw bytes prefix sniff) 검증. is_hwpml_bytes 가 True 반환 시
+    HwpmlParser 사용. is_hwpml_bytes 의 sniff 로직은 hwpml_parser 단위 테스트가
+    별도 커버 (test_hwpml_heading.py).
+    """
+
+    def test_hwpml_xml_prefix_dispatches_hwpml_parser(self) -> None:
+        from app.ingest.stages import extract as extract_mod
+
+        job_id, doc_id = "job-s10", "doc-s10"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "doc_type": "hwp",  # OLE2 또는 HWPML 둘 다 받음
+            "storage_path": "default/legal.hwp",
+            "flags": {},
+        })
+
+        # HWPML 합성 bytes — `<?xml ...?> <HWPML ...> ... </HWPML>`
+        hwpml_bytes = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<HWPML Version="2.8" Style="embed" SubVersion="2.8.0.0">\n'
+            '  <DOCSETTING><BEGINNUMBER Page="1" Footnote="1"/></DOCSETTING>\n'
+            '  <BODY><SECTION>\n'
+            '    <P><TEXT><CHAR>e2e 검증 본문 텍스트</CHAR></TEXT></P>\n'
+            '  </SECTION></BODY>\n'
+            '</HWPML>'
+        ).encode("utf-8")
+
+        class _FakeStorage:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get(self, path: str) -> bytes:
+                return hwpml_bytes
+
+        with patch.object(extract_mod, "SupabaseBlobStorage", _FakeStorage):
+            result = extract_mod.run_extract_stage(job_id, doc_id)
+
+        # HwpmlParser dispatch 검증
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result.source_type, "hwpml",
+            f"HWPML XML prefix → HwpmlParser 사용 — got source_type={result.source_type}",
+        )
+
+    def test_hwp_ole2_does_not_use_hwpml_parser(self) -> None:
+        """negative: OLE2 prefix (HWP 5.x) 면 HwpmlParser 사용 X — Hwp5Parser 시도."""
+        from app.ingest.stages import extract as extract_mod
+
+        job_id, doc_id = "job-s10b", "doc-s10b"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "doc_type": "hwp",
+            "storage_path": "default/old.hwp",
+            "flags": {},
+        })
+
+        # OLE2 시그니처 — HWP 5.x. is_hwpml_bytes 가 False 반환.
+        ole2_bytes = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" + b"\x00" * 4096
+
+        class _FakeStorage:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get(self, path: str) -> bytes:
+                return ole2_bytes
+
+        # Hwp5Parser 가 OLE2 직접 처리 — 합성 bytes 라 raise 가능. 그 경우도
+        # HwpmlParser 가 *호출되지 않았음* 만 검증.
+        hwpml_called = [0]
+        original_hwpml_parse = extract_mod._hwpml_parser.parse
+
+        def _spy(*args, **kwargs):
+            hwpml_called[0] += 1
+            return original_hwpml_parse(*args, **kwargs)
+
+        with patch.object(extract_mod, "SupabaseBlobStorage", _FakeStorage), \
+                patch.object(extract_mod._hwpml_parser, "parse", side_effect=_spy):
+            try:
+                extract_mod.run_extract_stage(job_id, doc_id)
+            except Exception:  # noqa: BLE001 — Hwp5Parser 합성 bytes 처리 실패 OK
+                pass
+
+        self.assertEqual(
+            hwpml_called[0], 0,
+            "OLE2 prefix 시 HwpmlParser 호출 X (Hwp5Parser 직행)",
+        )
+
+
+# ====================================================================
+# S11 — extract 스캔 PDF rerouting (W11 Day 2 — 한계 #58)
+# ====================================================================
+
+
+class ExtractScanPdfReroutingTest(E2EBaseTest):
+    """S11 — PyMuPDF parse 결과 raw_text 가 _SCAN_TEXT_THRESHOLD 이하 → ImageParser fallback.
+
+    검증 포인트
+    - 스캔 PDF 감지 (raw_text 빈약) → _reroute_pdf_to_image 호출
+    - documents.flags.scan=True 마킹 (DB CHECK 회피, doc_type='pdf' 유지)
+    - ImageParser.parse 가 페이지 단위로 호출 (max 5)
+    """
+
+    def test_scan_pdf_reroutes_to_image_parser(self) -> None:
+        import io as _io
+        import fitz as _fitz
+        from app.ingest.stages import extract as extract_mod
+        from app.adapters.parser import ExtractedSection, ExtractionResult
+
+        job_id, doc_id = "job-s11", "doc-s11"
+        _seed_job(self.fake_client, job_id, doc_id)
+        self.fake_client._tables["documents"].append({
+            "id": doc_id,
+            "doc_type": "pdf",
+            "storage_path": "default/scan.pdf",
+            "flags": {},
+        })
+
+        # 빈 1-페이지 PDF — 텍스트 0 (스캔본 시뮬). PyMuPDF 가 빈 raw_text 반환 → 스캔 감지.
+        pdf_doc = _fitz.open()
+        pdf_doc.new_page(width=595, height=842)
+        pdf_buf = _io.BytesIO()
+        pdf_doc.save(pdf_buf)
+        pdf_doc.close()
+        pdf_bytes = pdf_buf.getvalue()
+
+        class _FakeStorage:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get(self, path: str) -> bytes:
+                return pdf_bytes
+
+        # ImageParser.parse mock — page 단위 호출 카운트
+        parse_calls: list[str] = []
+
+        def _mock_image_parse(self_unused, data, *, file_name):
+            parse_calls.append(file_name)
+            return ExtractionResult(
+                source_type="image",
+                sections=[
+                    ExtractedSection(
+                        text="[표지] 모의 OCR",
+                        page=None,
+                        section_title="이미지 분류: 표지",
+                    )
+                ],
+                raw_text="[표지] 모의 OCR",
+                warnings=[],
+                metadata={"vision_type": "표지"},
+            )
+
+        with patch.object(extract_mod, "SupabaseBlobStorage", _FakeStorage), \
+                patch.object(
+                    type(extract_mod._image_parser), "parse", _mock_image_parse
+                ):
+            result = extract_mod.run_extract_stage(job_id, doc_id)
+
+        # ImageParser rerouting 검증
+        self.assertIsNotNone(result)
+        self.assertEqual(result.source_type, "pdf", "rerouting 후에도 source_type=pdf 유지")
+        self.assertEqual(len(parse_calls), 1, "1 페이지 PDF → ImageParser 1회 호출")
+        self.assertIn("page1", parse_calls[0])
+        self.assertIn("모의 OCR", result.raw_text)
+
+        # documents.flags.scan=True 마킹 검증
+        doc_row = self.fake_client._tables["documents"][0]
+        self.assertTrue(
+            doc_row["flags"].get("scan"),
+            f"flags.scan=True 마킹 기대 — got {doc_row['flags']}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
