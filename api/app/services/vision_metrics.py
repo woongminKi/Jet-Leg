@@ -1,22 +1,33 @@
 """W8 Day 4 — Vision API 호출 카운터 (한계 #29 회수).
 W11 Day 1 — quota 시점 추적 추가 (한계 #38 lite).
+W15 Day 3 — DB write-through (한계 #34 회수).
 
 배경
 - W8 Day 2 PPTX Vision OCR rerouting 후 Gemini Flash RPD 20 무료 티어 cap 모니터링.
-- W8 Day 2 실 reingest 시 tag_summarize 에서 429 — quota 추적 가시성 부재 → W8 Day 4 카운터 도입.
-- W11 Day 1 — Gemini SDK 가 RPD 직접 노출 X 제약 → fast-fail 시점만 정확히 capture
-  (한계 #38 본격 회수는 SDK 한계로 어려움, lite 버전).
+- W11 Day 1 fast-fail 시점 capture (한계 #38 lite).
+- W15 Day 3 — `vision_usage_log` 테이블 (마이그레이션 005) 에 row 1건씩 영구 저장
+  → 프로세스 재시작 시 휘발성 회수.
 
 설계 원칙
 - search_metrics 패턴 재사용 — in-memory + threading.Lock + stdlib only
 - 모든 Vision 경로 통일 — ImageParser.parse() 진입점
 - last_quota_exhausted_at — quota 초과 시점만 따로 기록 (한계 #38 lite)
+- DB write-through — Lock 해제 후 fire-and-forget. DB 실패는 log warning, 호출자 영향 0.
+- DB 부재 (마이그레이션 005 미적용) 시 graceful — in-memory only 동작.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+
+# W15 Day 3 — DB write-through 활성 여부.
+# default "1" — 운영은 활성. 단위 테스트에서 "0" 설정 시 skip → connection timeout 회피.
+_PERSIST_ENV_KEY = "JET_RAG_METRICS_PERSIST_ENABLED"
 
 _lock = threading.Lock()
 _total_calls: int = 0
@@ -25,13 +36,25 @@ _error_calls: int = 0
 _last_called_at: datetime | None = None
 _last_quota_exhausted_at: datetime | None = None  # W11 Day 1 — 한계 #38 lite
 
+_ERROR_MSG_MAX_LEN = 200  # W15 Day 3 한계 #84 — DB row 크기 보호
 
-def record_call(*, success: bool, quota_exhausted: bool = False) -> None:
+
+def record_call(
+    *,
+    success: bool,
+    quota_exhausted: bool = False,
+    error_msg: str | None = None,
+    source_type: str | None = None,
+) -> None:
     """Vision API 1회 호출 결과 기록 — ImageParser.parse() 가 호출.
 
     `quota_exhausted` (W11 Day 1 한계 #38 lite):
-        True 시 last_quota_exhausted_at 갱신. 다음 호출 시점까지 사용자에게
-        "최근 quota 소진" 정보 노출 가능.
+        True 시 last_quota_exhausted_at 갱신.
+
+    `error_msg` / `source_type` (W15 Day 3 — DB write-through):
+        - error_msg: success=False 시 Exception str (200자 truncate)
+        - source_type: 'image' / 'pdf_scan' / 'pptx_rerouting' / 'pptx_augment' (선택)
+        - 둘 다 in-memory 카운터에는 영향 X, DB row 에만 보존.
     """
     global _total_calls, _success_calls, _error_calls
     global _last_called_at, _last_quota_exhausted_at
@@ -45,6 +68,50 @@ def record_call(*, success: bool, quota_exhausted: bool = False) -> None:
         _last_called_at = now
         if quota_exhausted:
             _last_quota_exhausted_at = now
+
+    # W15 Day 3 — DB write-through (Lock 해제 후, graceful)
+    _persist_to_db(
+        called_at=now,
+        success=success,
+        error_msg=(error_msg or "")[:_ERROR_MSG_MAX_LEN] or None,
+        quota_exhausted=quota_exhausted,
+        source_type=source_type,
+    )
+
+
+def _persist_to_db(
+    *,
+    called_at: datetime,
+    success: bool,
+    error_msg: str | None,
+    quota_exhausted: bool,
+    source_type: str | None,
+) -> None:
+    """vision_usage_log 테이블 insert. 실패는 log warning + swallow (호출자 영향 0).
+
+    마이그레이션 005 미적용 시 (테이블 부재) Supabase 가 PGRST 에러 → 본 함수 가 catch.
+    그 후로도 호출은 이어서 시도 — 사용자가 005 적용하면 자연 회복.
+
+    JET_RAG_METRICS_PERSIST_ENABLED='0' 시 skip (단위 테스트 timeout 회피).
+    """
+    if os.environ.get(_PERSIST_ENV_KEY, "1") == "0":
+        return
+    try:
+        # lazy import — 단위 테스트가 supabase 의존성 없이도 동작 가능하도록
+        from app.db import get_supabase_client
+
+        client = get_supabase_client()
+        client.table("vision_usage_log").insert(
+            {
+                "called_at": called_at.isoformat(),
+                "success": success,
+                "error_msg": error_msg,
+                "quota_exhausted": quota_exhausted,
+                "source_type": source_type,
+            }
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 — DB 부재 / 마이그레이션 미적용 graceful
+        logger.debug("vision_usage_log insert skip (graceful): %s", exc)
 
 
 def get_usage() -> dict:

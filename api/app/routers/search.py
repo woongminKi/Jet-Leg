@@ -214,6 +214,7 @@ def search(
                 fallback_reason="permanent_4xx",
                 embed_cache_hit=False,
                 mode=mode,
+                query_text=clean_q,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -276,6 +277,7 @@ def search(
             fallback_reason=fallback_reason,
             embed_cache_hit=embed_cache_hit,
                 mode=mode,
+                query_text=clean_q,
         )
         return SearchResponse(
             query=clean_q,
@@ -344,6 +346,7 @@ def search(
             fallback_reason=fallback_reason,
             embed_cache_hit=embed_cache_hit,
                 mode=mode,
+                query_text=clean_q,
         )
         return SearchResponse(
             query=clean_q,
@@ -447,6 +450,7 @@ def search(
         fallback_reason=fallback_reason,
         embed_cache_hit=embed_cache_hit,
                 mode=mode,
+                query_text=clean_q,
     )
     return SearchResponse(
         query=clean_q,

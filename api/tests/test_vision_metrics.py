@@ -220,5 +220,53 @@ class VisionQuotaExhaustedTrackingTest(unittest.TestCase):
         )
 
 
+class PersistGracefulTest(unittest.TestCase):
+    """W15 Day 3 — DB write-through env 동작 검증."""
+
+    def test_persist_disabled_env_skips_db(self) -> None:
+        """JET_RAG_METRICS_PERSIST_ENABLED='0' 시 _persist_to_db 즉시 return."""
+        from app.services import vision_metrics
+        import os
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+
+        # mock import 경로가 호출되지 않도록 검증 — 호출되면 ImportError 자체로 걸림
+        # (테스트 환경의 supabase import 차단 X 단순 swallow)
+        vision_metrics._persist_to_db(
+            called_at=__import__("datetime").datetime.now(
+                __import__("datetime").timezone.utc
+            ),
+            success=True,
+            error_msg=None,
+            quota_exhausted=False,
+            source_type="image",
+        )
+        # 예외 없이 return — 정상
+
+    def test_persist_handles_db_failure_gracefully(self) -> None:
+        """env='1' 이라도 supabase 호출 실패는 swallow."""
+        from app.services import vision_metrics
+        from unittest.mock import patch
+        import os
+
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        try:
+            with patch(
+                "app.db.get_supabase_client",
+                side_effect=RuntimeError("DB down"),
+            ):
+                # raise 없이 정상 return 기대
+                vision_metrics._persist_to_db(
+                    called_at=__import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc
+                    ),
+                    success=False,
+                    error_msg="x",
+                    quota_exhausted=False,
+                    source_type=None,
+                )
+        finally:
+            os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+
+
 if __name__ == "__main__":
     unittest.main()

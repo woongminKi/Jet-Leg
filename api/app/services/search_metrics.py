@@ -23,10 +23,18 @@ future-proof:
 
 from __future__ import annotations
 
+import logging
+import os
 import statistics
 import threading
 from collections import Counter, deque
+from datetime import datetime, timezone
 from typing import Literal
+
+logger = logging.getLogger(__name__)
+
+# W15 Day 3 — DB write-through env (vision_metrics 와 동일).
+_PERSIST_ENV_KEY = "JET_RAG_METRICS_PERSIST_ENABLED"
 
 # 운영 부하 단일 사용자 환경 — 최근 500건이면 5분 분량 (10 QPS 가정).
 # 늘릴 때는 메모리 영향 검토 (이벤트 1건 ≈ 200B → 500건 ≈ 100KB).
@@ -54,23 +62,21 @@ def record_search(
     fallback_reason: str | None,
     embed_cache_hit: bool = False,
     mode: str = "hybrid",
+    query_text: str | None = None,
 ) -> None:
-    """`/search` 1회 처리 결과를 ring buffer 에 적재.
-
-    호출 위치: `search()` 함수의 모든 응답 직전 (200 + 503 raise 직전 모두).
+    """`/search` 1회 처리 결과를 ring buffer 에 적재 + DB write-through (W15 Day 3).
 
     `fallback_reason`:
-        - None: dense path 정상 — sparse-only fallback 미진입
-        - "transient_5xx": HF API transient 실패 → sparse-only fallback 으로 200 응답
-        - "permanent_4xx": HF API 영구 실패 → 503 raise 예정 (가시성 위해 record 만)
+        - None / "transient_5xx" / "permanent_4xx" (W3 Day 2 Phase 3 D-1)
 
-    `embed_cache_hit`: W4-Q-3 — `embed_query` LRU 의 hit 여부.
+    `embed_cache_hit`: W4-Q-3 — `embed_query` LRU hit 여부.
 
-    `mode` (W14 Day 3 한계 #77 — ablation 분리 측정):
-        - "hybrid" (default): dense + sparse RRF
-        - "dense": dense_rank 만 통과시킨 ablation
-        - "sparse": sparse_rank 만 통과시킨 ablation
-        - 화이트리스트 외 값은 "hybrid" 로 강제 (보수적).
+    `mode` (W14 Day 3 한계 #77): hybrid / dense / sparse — 외 값은 hybrid 강제.
+
+    `query_text` (W15 Day 3 — DB write-through):
+        - DB row 의 query_text 컬럼 (search_metrics_log)
+        - in-memory event 에는 미저장 (메모리 절약)
+        - None / 빈 문자열도 허용 (테스트 backward compat)
     """
     safe_mode = mode if mode in _VALID_MODES else "hybrid"
     event = {
@@ -85,6 +91,48 @@ def record_search(
     }
     with _lock:
         _ring.append(event)
+
+    # W15 Day 3 — DB write-through (Lock 해제 후, graceful)
+    _persist_to_db(
+        recorded_at=datetime.now(timezone.utc),
+        event=event,
+        query_text=query_text,
+    )
+
+
+def _persist_to_db(
+    *,
+    recorded_at: datetime,
+    event: dict,
+    query_text: str | None,
+) -> None:
+    """search_metrics_log 테이블 insert. 실패는 log warning + swallow.
+
+    마이그레이션 006 미적용 시 graceful — in-memory ring buffer 만 동작.
+    JET_RAG_METRICS_PERSIST_ENABLED='0' 시 skip (단위 테스트 timeout 회피).
+    """
+    if os.environ.get(_PERSIST_ENV_KEY, "1") == "0":
+        return
+    try:
+        from app.db import get_supabase_client
+
+        client = get_supabase_client()
+        client.table("search_metrics_log").insert(
+            {
+                "recorded_at": recorded_at.isoformat(),
+                "took_ms": event["took_ms"],
+                "dense_hits": event["dense_hits"],
+                "sparse_hits": event["sparse_hits"],
+                "fused": event["fused"],
+                "has_dense": event["has_dense"],
+                "fallback_reason": event["fallback_reason"],
+                "embed_cache_hit": event["embed_cache_hit"],
+                "mode": event["mode"],
+                "query_text": query_text,
+            }
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 — DB 부재 / 마이그레이션 미적용 graceful
+        logger.debug("search_metrics_log insert skip (graceful): %s", exc)
 
 
 def get_search_slo() -> dict:
