@@ -92,6 +92,21 @@ class ReingestResponse(BaseModel):
     chunks_deleted: int
 
 
+class ReingestMissingResponse(BaseModel):
+    """W25 D14 B sprint — incremental vision reingest 응답.
+
+    full reingest 와 달리 chunks 보존 + 누락 페이지만 vision 처리.
+    """
+    doc_id: str
+    job_id: str
+    total_pages: int
+    missing_pages_before: list[int]  # 호출 시점 누락 페이지
+    note: str = (
+        "incremental vision reingest — 누락 페이지만 처리 후 백그라운드 진행. "
+        "결과는 GET /documents/{id}/status 로 폴링."
+    )
+
+
 class UrlUploadRequest(BaseModel):
     url: str = Field(..., description="수집할 페이지 URL (http/https 만 허용).")
     title: str | None = Field(
@@ -641,6 +656,95 @@ def reingest_document(
 
     return ReingestResponse(
         doc_id=doc_id, job_id=job.id, chunks_deleted=chunks_deleted
+    )
+
+
+# ============================================================
+# POST /documents/{doc_id}/reingest-missing  (W25 D14 B sprint)
+# ============================================================
+@router.post(
+    "/{doc_id}/reingest-missing",
+    response_model=ReingestMissingResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def reingest_missing_vision(
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+) -> ReingestMissingResponse:
+    """incremental vision reingest — 기존 chunks 보존 + 누락 페이지만 vision 처리.
+
+    full reingest 의 한계 (chunks 전부 삭제 → random 503 으로 정답 페이지 누락 시
+    답변 회귀 / Sprint 4 처럼 fail 시 chunks 0 사태) 회피.
+
+    동작:
+    - 현재 chunks 의 vision 처리 페이지 (section_title `(vision) p.N` 매칭) 추출
+    - PDF 의 누락 페이지만 vision 호출 (sweep 적용) → 새 chunks insert
+    - chunk_idx 는 max(existing) + 1 부터 (충돌 회피)
+    - dense_vec 은 NULL → embed stage 가 BGE-M3 로 채움
+    - chunk_filter / content_gate / tag_summarize / doc_embed / dedup 안 호출
+      (이미 적용된 메타 보존)
+
+    PDF 자체가 변경된 경우는 부정확 — full reingest 권장.
+    """
+    supabase = get_supabase_client()
+
+    existing = (
+        supabase.table("documents")
+        .select("id,doc_type")
+        .eq("id", doc_id)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+    if not existing.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="문서를 찾을 수 없습니다.",
+        )
+    if existing.data[0]["doc_type"] != "pdf":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="incremental vision reingest 는 PDF 만 지원합니다.",
+        )
+
+    latest = get_latest_job_for_doc(doc_id)
+    if latest and latest.status in ("queued", "running"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"진행 중인 작업이 있습니다 (job={latest.id}, status={latest.status}).",
+        )
+
+    # 호출 시점 누락 페이지 계산 (응답 immediate)
+    from app.ingest.incremental import (
+        _vision_processed_pages,
+        run_incremental_vision_pipeline,
+    )
+    from app.adapters.impl.supabase_storage import SupabaseBlobStorage
+    import fitz
+
+    doc_row = (
+        supabase.table("documents")
+        .select("storage_path")
+        .eq("id", doc_id)
+        .limit(1)
+        .execute()
+        .data[0]
+    )
+    storage = SupabaseBlobStorage(bucket=get_settings().supabase_storage_bucket)
+    pdf_data = storage.get(doc_row["storage_path"])
+    with fitz.open(stream=pdf_data, filetype="pdf") as fdoc:
+        total_pages = len(fdoc)
+    processed = _vision_processed_pages(supabase, doc_id)
+    missing = sorted(set(range(1, total_pages + 1)) - processed)
+
+    job = create_job(doc_id=doc_id)
+    background_tasks.add_task(run_incremental_vision_pipeline, job.id, doc_id)
+
+    return ReingestMissingResponse(
+        doc_id=doc_id,
+        job_id=job.id,
+        total_pages=total_pages,
+        missing_pages_before=missing,
     )
 
 
