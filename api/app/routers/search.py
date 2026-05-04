@@ -80,6 +80,26 @@ _COVER_GUARD_PENALTY = 0.3
 #       한국어 sparse 회복 (D) 으로 근본 해결해야 함.
 
 
+def _build_pgroonga_query(q: str) -> str:
+    """W25 D10 차수 D-a — PGroonga `&@~` multi-token AND → OR 변환.
+
+    PGroonga query mode (`&@~`) 는 query 내 모든 토큰이 같은 chunk 에 모두 매칭돼야
+    hit 가 잡힘 (AND 매칭). 사용자 자연어 query 는 3~5 단어라 한 단어만 vocab 부재여도
+    전체 0 hits. OR 변환으로 한 단어라도 매칭하는 chunk 를 sparse 결과에 포함시켜
+    RRF 가산이 가능하게 함 (dense path 와 정상 합산).
+
+    W25 D9 진단 (work-log/2026-05-04 W25 D9 phase2-d-diagnosis.md) 직접 검증:
+        '소나타 전장' → 0 hits (AND, 본문 vocab 'Sonata' 만 있고 '소나타' 0건)
+        '소나타 OR 전장' → 2 hits (OR — '전장' 단독 매칭으로 sparse 회복)
+
+    단일 토큰 query 는 변환 무의미 → 그대로 반환 (OR 1개는 의미 없음).
+    """
+    tokens = [t for t in q.strip().split() if t]
+    if len(tokens) <= 1:
+        return q.strip()
+    return " OR ".join(tokens)
+
+
 class MatchedChunk(BaseModel):
     chunk_id: str
     chunk_idx: int
@@ -268,6 +288,9 @@ def search(
     else:
         rpc_top_k = _RPC_TOP_K
 
+    # W25 D10 차수 D-a — sparse path 의 PGroonga query 만 OR 변환. dense path 는 무관.
+    pg_q = _build_pgroonga_query(clean_q)
+
     # W20 Day 2 #74 — mode 별 RPC 분기 (008 split RPC). 008 미적용 시 graceful fallback.
     used_split_rpc = False
     if mode == "dense" and dense_vec is not None:
@@ -291,7 +314,7 @@ def search(
             rpc_resp = client.rpc(
                 "search_sparse_only",
                 {
-                    "query_text": clean_q,
+                    "query_text": pg_q,
                     "k_rrf": _RRF_K,
                     "top_k": rpc_top_k,
                     "user_id_arg": str(user_id),
@@ -311,7 +334,7 @@ def search(
             rpc_resp = client.rpc(
                 "search_hybrid_rrf",
                 {
-                    "query_text": clean_q,
+                    "query_text": pg_q,
                     "query_dense": dense_vec,
                     "k_rrf": _RRF_K,
                     "top_k": rpc_top_k,
@@ -320,7 +343,7 @@ def search(
             ).execute()
             rpc_rows = rpc_resp.data or []
         else:
-            rpc_rows = _sparse_only_fallback(client, clean_q, user_id, rpc_top_k)
+            rpc_rows = _sparse_only_fallback(client, pg_q, user_id, rpc_top_k)
 
     # W11 Day 4 — 단일 문서 스코프 (US-08): RPC 결과 중 해당 doc_id 만 보존.
     # 응용 layer 필터 — RPC 결과 N 개 중 doc_id 일치만 통과 → 자연스럽게 dense·sparse·fused 카운트도 갱신.
