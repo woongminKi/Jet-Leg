@@ -28,6 +28,7 @@ import {
   type DocumentDetailResponse,
 } from '@/lib/api';
 import { docTypeLabel } from '@/lib/doc-type-label';
+import { buildDocsUrl } from '@/lib/docs-filter';
 import { formatBytes } from '@/lib/format';
 
 const POLL_INTERVAL_MS = 1500;
@@ -309,7 +310,12 @@ function TagsSection({ tags }: { tags: string[] }) {
       </div>
       <div className="flex flex-wrap gap-2">
         {tags.map((t) => (
-          <Link key={t} href={`/search?q=${encodeURIComponent(t)}`}>
+          <Link
+            key={t}
+            href={buildDocsUrl({ tag: t })}
+            aria-label={`${t} 태그로 좁혀 문서 보기`}
+            title="이 태그로 좁히기"
+          >
             <Badge variant="secondary" className="cursor-pointer hover:bg-secondary/80">
               #{t}
             </Badge>

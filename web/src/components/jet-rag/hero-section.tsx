@@ -61,16 +61,11 @@ export function HeroSection() {
                 파일 업로드
               </Link>
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="lg"
-              className="gap-2"
-              disabled
-              title="Day 7+ 에서 활성화됩니다"
-            >
-              <FileText className="h-5 w-5" />
-              전체 문서 보기
+            <Button asChild variant="outline" size="lg" className="gap-2">
+              <Link href="/docs">
+                <FileText className="h-5 w-5" />
+                전체 문서 보기
+              </Link>
             </Button>
           </div>
         </div>

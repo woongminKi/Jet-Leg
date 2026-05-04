@@ -6,6 +6,7 @@ import { SearchSubheader } from '@/components/jet-rag/search-subheader';
 import { FilterSidebar } from '@/components/jet-rag/filter-sidebar';
 import { ResultCard } from '@/components/jet-rag/result-card';
 import { Badge } from '@/components/ui/badge';
+import { buildDocsUrl } from '@/lib/docs-filter';
 
 interface SearchPageProps {
   searchParams: Promise<{
@@ -116,7 +117,12 @@ function NoResults({
       {!isDocScope && popularTags.length > 0 && (
         <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
           {popularTags.slice(0, 8).map((t) => (
-            <Link key={t.tag} href={`/search?q=${encodeURIComponent(t.tag)}`}>
+            <Link
+              key={t.tag}
+              href={buildDocsUrl({ tag: t.tag })}
+              aria-label={`${t.tag} 태그로 좁혀 문서 보기`}
+              title="이 태그로 좁히기"
+            >
               <Badge variant="secondary" className="cursor-pointer hover:bg-secondary/80">
                 #{t.tag}
               </Badge>
