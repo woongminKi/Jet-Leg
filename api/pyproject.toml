@@ -21,4 +21,6 @@ dependencies = [
     "uvicorn[standard]>=0.45.0",
     "ragas>=0.4.3",
     "datasets>=4.8.5",
+    "langchain-google-genai>=4.2.2",
+    "rapidfuzz>=3.14.5",
 ]
