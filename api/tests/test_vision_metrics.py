@@ -374,7 +374,7 @@ class SourceTypeNormalizationTest(unittest.TestCase):
     def test_valid_source_types_pass_through(self) -> None:
         from app.services import vision_metrics
 
-        for valid in ("image", "pdf_scan", "pptx_rerouting", "pptx_augment"):
+        for valid in ("image", "pdf_scan", "pptx_rerouting", "pptx_augment", "pdf_vision_enrich"):
             self.assertEqual(
                 vision_metrics._normalize_source_type(valid), valid,
                 f"valid source_type={valid!r} 가 그대로 통과해야 함",

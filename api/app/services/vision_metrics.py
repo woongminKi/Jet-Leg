@@ -95,7 +95,7 @@ _first_persist_warn_logged: bool = False
 # W16 Day 4 한계 #90 — source_type enum 강제. 잘못된 값은 None 으로 fallback.
 # 005 schema 의 source_type 컬럼은 자유 TEXT 이나, DB row 의미 일관성 유지 위해 모듈 레벨 검증.
 _VALID_SOURCE_TYPES: frozenset[str] = frozenset(
-    {"image", "pdf_scan", "pptx_rerouting", "pptx_augment"}
+    {"image", "pdf_scan", "pptx_rerouting", "pptx_augment", "pdf_vision_enrich"}
 )
 
 

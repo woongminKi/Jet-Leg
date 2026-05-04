@@ -55,21 +55,89 @@ def _enrich_pdf_with_vision(data, *, base_result, file_name, image_parser):
 
 ---
 
-## 2. Sprint 2 (사용자 액션 후)
+## 2. Sprint 2 — 완료 결과 (2026-05-05)
 
-**사용자 액션**:
-1. https://aistudio.google.com/apikey 접속
-2. 본 API key 의 billing 활성화 (paid tier 전환)
-3. 활성화 알림
+### 2.1 paid tier 활성화 + reingest
 
-**제가 진행**:
-1. ENV 활성화 — `JETRAG_PDF_VISION_ENRICH=true` (uvicorn 환경변수 또는 .env)
-2. 본 PDF reingest — `POST /documents/b218e8a1-cb35-4540-b969-f0f4fac517fa/reingest`
-3. 검증 1 — chunks DB 직접 확인 (p.4 표 markdown / p.6 그림 ocr_text 들어왔나)
-4. 검증 2 — 같은 query 재호출 → /search + /answer 결과 변화 측정
-5. 본 PDF + SONATA 의 mini-Ragas 비교 (가능 시)
-6. 효과 만족 시 SONATA 도 ENV 켜고 reingest (선택)
-7. work-log + commit + push
+- 사용자 paid tier 활성화 완료 (Tier 1 / 후불 / Default Gemini Project)
+- `JETRAG_PDF_VISION_ENRICH=true` ENV 적용 후 uvicorn 재시작
+- `POST /documents/b218e8a1.../reingest` 호출 → job 2410e78b 시작
+- 인제스트 완료 16분 14초 (모든 stage succeeded)
+
+### 2.2 인제스트 통계
+
+| 항목 | 값 |
+|---|---|
+| 총 chunks | 384 (PyMuPDF 단독) → **428** (+44 vision sections) |
+| vision 처리 페이지 | 32/41 (Google 503 retry 실패 9페이지 누락 — p.18, 19, 20, 21, 23, 26, 27, 34, 37) |
+| extract latency | 884초 (페이지당 평균 ~21초, vision 503 retry 영향) |
+| embed latency | 74초 (BGE-M3 페이지별) |
+| 비용 추정 | ~$0.024 (32 페이지 × $0.00075) |
+
+### 2.3 검증 — 사용자 query 직접 재호출
+
+**query**: `"테스트베드 조성 지원 사업 체계 구조가 어떻게 되어 있어?"` (사용자 화면 시나리오 동일)
+
+**검색 ranking 변화**:
+- 이전 (Image #1): p.4 chunk 15 (표 헤더 일부, 48자) 가 1위, p.6 chunk 가 6위 (그림 정보 0건)
+- 현재: **p.6 vision chunk (idx 392, 745자) 가 top 1** — 정답 페이지가 1위 진입
+
+**답변 변화**:
+
+이전 (잘린 답변):
+```
+분 야 과제당 예산 지원 과제수 지원내용 및 지원대상 테스트베드 조성 ❶ 지원...
+```
+
+현재 (vision 통합 답변):
+```
+테스트베드 조성 지원 사업은 실증 연계형 테스트베드 조성 사업으로,
+주관기관이 테스트베드를 조성하고 활용하며 2건 이상의 장비·SW 실증 대상을
+확보합니다 [1]. 장비·SW 보유 기업은 UPS, 배터리, 액체냉각, 항온항습기,
+발전기, 서버·스토리지, 네트워크, 보안 관제, DCMIM 등 다양한 장비·SW를
+테스트베드에서 실증합니다 [1]. 수요기관은 실증된 장비·SW의 활용을
+검토하고 확보합니다 [1]. 이 사업은 실증 및 검증 환경이 가능한 테스트베드를
+구축 및 조성하며, 국산화 장비·SW 실증 및 친환경·고효율 실증 등과 연계하여
+진행됩니다 [1].
+```
+
+→ Image #3 그림 다이어그램의 모든 핵심 라벨 (실증 연계형 / 주관기관 / 수요기관 / UPS·배터리·액체냉각·항온항습기·발전기·서버·스토리지·네트워크·보안 관제·DCMIM / 국산화·친환경 실증) **모두 정확히 포함**.
+
+**출처 8개 중 7개가 vision chunks** — 검색 ranking 자체가 vision chunks 우선.
+
+### 2.4 minor fix — vision_metrics source_type 화이트리스트 추가
+
+인제스트 중 warning 로그 발견:
+```
+vision_metrics.record_call source_type='pdf_vision_enrich' 무효 — None 으로 fallback
+```
+
+원인: `app/services/vision_metrics.py` 의 `_VALID_SOURCE_TYPES` 화이트리스트에 신규 `pdf_vision_enrich` 미포함. metrics 만 None fallback (graceful), 인제스트 자체 영향 0.
+
+fix: 화이트리스트에 `pdf_vision_enrich` 추가 + 단위 테스트 fixture 갱신.
+
+### 2.5 sprint 2 변경 파일 (commit)
+
+- `api/app/services/vision_metrics.py` — source_type 화이트리스트 +1
+- `api/tests/test_vision_metrics.py` — fixture +1
+- `work-log/2026-05-04 W25 D14 PDF vision enrich.md` — Sprint 2 결과 추가
+
+회귀 0 (단위 테스트 312 OK 유지).
+
+---
+
+## 3. Sprint 2 후속 검토 (사용자 결정)
+
+
+
+### 후속 후보
+
+| # | 후보 | 가치 |
+|---|---|---|
+| **a** | 503 retry 실패 9페이지 재처리 | 누락 페이지 보강 (paid tier 면 retry 충분) |
+| b | SONATA 도 ENV 켜고 reingest | 일관성 (단 SONATA 는 표/그림 적은 카탈로그 — 가치 작음) |
+| c | mini-Ragas 골든셋에 본 PDF QA 추가 | 정량 측정 |
+| d | 다른 사용자 자료 (HWPX/PPTX/이미지) 적재 | 데이터셋 확장 |
 
 ---
 
