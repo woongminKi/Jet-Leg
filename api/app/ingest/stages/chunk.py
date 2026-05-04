@@ -308,6 +308,10 @@ def _to_chunk_records(
 
     `metadata["overlap_with_prev_chunk_idx"]` — overlap 이 적용된 청크는 이전 청크의 idx
     를 기록 (디버깅·검색 결과 출처 추적용). overlap 없는 첫 청크는 메타 미기록.
+
+    W25 D12 B3 (section_title prepend) 시도 후 dry-run 결과로 SKIP — 격차 정답 청크 (39, 43,
+    44) 의 본문 head 가 이미 title 포함되어 prepend 회피, 효과 없음 + 인접 chunks (45, 46)
+    prepend 로 G-S-009 더 악화 위험. work-log/2026-05-04 W25 D12 답변 생성 PoC.md 참조.
     """
     records: list[ChunkRecord] = []
     for idx, section in enumerate(sections):
