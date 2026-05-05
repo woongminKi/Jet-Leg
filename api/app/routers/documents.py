@@ -868,11 +868,14 @@ def list_active_documents(
     supabase = get_supabase_client()
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
+    # W25 D14 — status filter 를 SQL 단에서 적용하면 같은 doc 에 어제 failed + 오늘
+    # completed 양쪽 row 가 있을 때 failed 만 SELECT → 잘못 stale 로 indicator 노출.
+    # 모든 status 를 가져와 doc_id 별 latest 만 추출 후, latest 의 status 가 active
+    # (queued/running/failed) 인 doc 만 응답에 포함. completed/cancelled 가 latest 면 자연 제외.
     def _query():
         return (
             supabase.table("ingest_jobs")
             .select(_ingest_jobs_select_columns())
-            .in_("status", list(_ACTIVE_DOC_STATUSES))
             .gte("queued_at", cutoff)
             .order("queued_at", desc=True)
             .execute()
@@ -894,6 +897,13 @@ def list_active_documents(
         doc_id = row["doc_id"]
         if doc_id not in latest_by_doc:
             latest_by_doc[doc_id] = row
+
+    # latest 의 status 가 active 인 doc 만 유지
+    latest_by_doc = {
+        doc_id: row
+        for doc_id, row in latest_by_doc.items()
+        if row.get("status") in _ACTIVE_DOC_STATUSES
+    }
 
     if not latest_by_doc:
         return ActiveDocsResponse(items=[])
