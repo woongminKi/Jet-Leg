@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import time
+import unicodedata
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
@@ -224,7 +225,8 @@ def answer(
     start_t = time.monotonic()
     settings = get_settings()
     user_id = str(settings.default_user_id)
-    clean_q = q.strip()
+    # W25 D14 — 한국어 NFD/NFC 정규화 (DB title/chunk 이 NFC 인데 query 가 NFD 면 매칭 fail)
+    clean_q = unicodedata.normalize("NFC", q.strip())
     if not clean_q:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

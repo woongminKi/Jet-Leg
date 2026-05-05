@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
@@ -460,7 +461,9 @@ async def upload_document(
     # ---- 신규 — pending path 로 documents insert (Storage upload 는 BG 가 담당) ----
     doc_uuid = uuid.uuid4().hex
     pending_path = f"pending/{_PENDING_PATH_NAMESPACE}/{doc_uuid}{ext}"
-    doc_title = title or PurePosixPath(file_name).stem
+    # W25 D14 — 한국어 NFD/NFC 불일치 회피 (macOS Finder 가 NFD 로 파일명 보냄)
+    # → ilike/검색 query (NFC) 와 byte 매칭 fail. 인제스트 단에서 NFC 통일.
+    doc_title = unicodedata.normalize("NFC", title or PurePosixPath(file_name).stem)
     received_ms = int((time.perf_counter() - started_at) * 1000)
     doc_row = (
         supabase.table("documents")
@@ -630,6 +633,9 @@ async def upload_url(
         from urllib.parse import urlparse as _urlparse
 
         title = _urlparse(payload.url).hostname or "untitled URL"
+
+    # W25 D14 — title NFC 정규화 (한국어 NFD/NFC 불일치 회피)
+    title = unicodedata.normalize("NFC", title)
 
     # ---- documents insert (pending path + flags.source_url) ----
     doc_uuid = uuid.uuid4().hex
