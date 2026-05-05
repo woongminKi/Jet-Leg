@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Upload, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ActiveDocsIndicator } from './active-docs-indicator';
 import { HeaderSearch } from './header-search';
 import { HeaderMobileToggle } from './header-mobile-toggle';
 import { HeaderMobilePanel } from './header-mobile-panel';
@@ -30,6 +31,8 @@ export function Header() {
         <HeaderSearch />
 
         <div className="flex items-center gap-2">
+          <ActiveDocsIndicator />
+
           <Button asChild size="sm" className="hidden gap-2 sm:flex">
             <Link href="/ingest">
               <Upload className="h-4 w-4" />

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Noto_Sans_KR } from 'next/font/google';
+import { Toaster } from 'sonner';
 import './globals.css';
 import { Header } from '@/components/jet-rag/header';
 import { cn } from '@/lib/utils';
@@ -26,6 +27,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col font-sans">
         <Header />
         {children}
+        <Toaster position="bottom-right" richColors closeButton />
       </body>
     </html>
   );
