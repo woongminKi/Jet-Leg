@@ -1,5 +1,4 @@
 import Link from 'next/link';
-import { redirect } from 'next/navigation';
 import { Search as SearchIcon, Sparkles } from 'lucide-react';
 import { getAnswer } from '@/lib/api';
 import { AnswerView } from '@/components/jet-rag/answer-view';
@@ -35,8 +34,33 @@ export default async function AskPage({ searchParams }: AskPageProps) {
   const docId = docIdParam?.trim() || null;
   const topK = parseTopK(topKParam);
 
+  // W25 D14 — 빈 query 시 홈 redirect 대신 안내 페이지 (사용자가 /ask 직접 진입 시 안내 부족 fix).
   if (!query) {
-    redirect('/');
+    return (
+      <main className="flex-1">
+        <div className="container mx-auto max-w-2xl px-4 py-16 text-center md:px-6">
+          <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-full bg-primary/15">
+            <Sparkles className="h-7 w-7 text-primary" />
+          </div>
+          <h1 className="text-2xl font-bold text-foreground">AI 답변</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            자연어 질문을 입력하면 Gemini 가 적재된 문서를 근거로 답변하고, 출처와 정량 평가
+            (Faithfulness · Relevancy · Context Precision) 를 함께 보여줍니다.
+          </p>
+          <div className="mt-8 space-y-3">
+            <Link
+              href="/"
+              className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              <SearchIcon className="h-4 w-4" />홈에서 질문 입력
+            </Link>
+            <p className="text-xs text-muted-foreground">
+              또는 검색 결과 페이지의 &lsquo;AI 답변 보기&rsquo; 카드 클릭
+            </p>
+          </div>
+        </div>
+      </main>
+    );
   }
 
   const response = await getAnswer(query, topK, docId);
