@@ -79,7 +79,11 @@ def evaluate_single(
         from ragas import EvaluationDataset, evaluate
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics import Faithfulness, ResponseRelevancy
+        from ragas.metrics import (
+            Faithfulness,
+            LLMContextPrecisionWithoutReference,
+            ResponseRelevancy,
+        )
     except ImportError as exc:
         raise RagasUnavailable(f"의존성 누락: {exc}") from exc
 
@@ -105,7 +109,11 @@ def evaluate_single(
         )
         result = evaluate(
             dataset=EvaluationDataset.from_hf_dataset(ds),
-            metrics=[Faithfulness(), ResponseRelevancy()],
+            metrics=[
+                Faithfulness(),
+                ResponseRelevancy(),
+                LLMContextPrecisionWithoutReference(),
+            ],
             llm=judge_llm,
             embeddings=judge_emb,
         )
@@ -114,6 +122,10 @@ def evaluate_single(
         metrics = RagasMetrics(
             faithfulness=_safe_float(scores.get("faithfulness")),
             answer_relevancy=_safe_float(scores.get("answer_relevancy")),
+            # W25 D14 — "검색 적합도" — query+contexts 만으로 ranking 평가 (reference 불필요)
+            context_precision=_safe_float(
+                scores.get("llm_context_precision_without_reference")
+            ),
         )
         return RagasEvalResult(
             metrics=metrics,

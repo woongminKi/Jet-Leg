@@ -30,17 +30,17 @@ interface RagasEvalCardProps {
 }
 
 const METRIC_LABELS: Record<keyof RagasMetrics, string> = {
+  context_precision: '검색 적합도 (Context Precision)',
   faithfulness: '충실도 (Faithfulness)',
   answer_relevancy: '관련성 (Relevancy)',
-  context_precision: 'Context Precision',
   context_recall: 'Context Recall',
   answer_correctness: '정답 일치도',
 };
 
 const METRIC_DESCRIPTIONS: Record<keyof RagasMetrics, string> = {
+  context_precision: '검색된 출처 chunks 가 질문에 얼마나 잘 맞는가 — 가장 관련된 chunk 가 상위에 있는지 LLM judge 평가',
   faithfulness: '답변이 출처에 충실한가 — 출처에 없는 내용 (환각) 비율',
   answer_relevancy: '답변이 질문에 적합한가 — 질문 의도 일치도',
-  context_precision: '출처 ranking 정확성 (ground truth 필요)',
   context_recall: '출처가 정답 정보 cover (ground truth 필요)',
   answer_correctness: '정답과 답변의 일치도 (ground truth 필요)',
 };
@@ -162,18 +162,39 @@ export function RagasEvalCard({ query, answer, docId, sources }: RagasEvalCardPr
       )}
 
       {hasMetrics && data && (
-        <div className="mt-3 space-y-2">
-          {(['faithfulness', 'answer_relevancy'] as const).map((key) => {
-            const score = data.metrics[key];
-            return (
-              <MetricRow
-                key={key}
-                label={METRIC_LABELS[key]}
-                description={METRIC_DESCRIPTIONS[key]}
-                score={score}
-              />
-            );
-          })}
+        <div className="mt-3 space-y-3">
+          {/* "검색 적합도" — 사용자 needs (chunks 가 잘 불러와졌는지) */}
+          <div>
+            <h4 className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+              검색 품질
+            </h4>
+            <MetricRow
+              label={METRIC_LABELS.context_precision}
+              description={METRIC_DESCRIPTIONS.context_precision}
+              score={data.metrics.context_precision}
+            />
+          </div>
+
+          {/* 답변 품질 — 환각·적합 */}
+          <div>
+            <h4 className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+              답변 품질
+            </h4>
+            <div className="space-y-2">
+              {(['faithfulness', 'answer_relevancy'] as const).map((key) => {
+                const score = data.metrics[key];
+                return (
+                  <MetricRow
+                    key={key}
+                    label={METRIC_LABELS[key]}
+                    description={METRIC_DESCRIPTIONS[key]}
+                    score={score}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
           <p className="pt-1 text-[11px] text-muted-foreground/70">
             judge: {data.judge_model ?? '?'} · {data.cached ? '캐시' : `측정 ${data.took_ms ?? '?'}ms`}
             {data.created_at && ` · ${new Date(data.created_at).toLocaleString('ko')}`}
