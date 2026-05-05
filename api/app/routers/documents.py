@@ -13,6 +13,7 @@ import hashlib
 import logging
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -155,6 +156,26 @@ class BatchStatusResponse(BaseModel):
 
 
 _BATCH_STATUS_MAX_IDS = 50
+
+
+class ActiveDocItem(BaseModel):
+    """W25 D14 Sprint 0 — /ingest 새로고침 후 진행 현황 복원용.
+
+    placeholder 1줄 카드 정보 (UploadItem 의 file_name·sizeBytes·docId·jobId 매핑).
+    """
+    doc_id: str
+    file_name: str
+    size_bytes: int
+    job: JobStatus  # 항상 존재 (queued/running/failed)
+
+
+class ActiveDocsResponse(BaseModel):
+    items: list[ActiveDocItem]
+
+
+_ACTIVE_DOC_DEFAULT_HOURS = 24
+_ACTIVE_DOC_MAX_HOURS = 168  # 7일
+_ACTIVE_DOC_STATUSES = ("queued", "running", "failed")
 
 
 class DocumentDetailResponse(BaseModel):
@@ -783,6 +804,83 @@ def _reset_doc_for_reingest(supabase, doc_id: str) -> int:
 # ============================================================
 # GET /documents/batch-status
 # ============================================================
+@router.get("/active", response_model=ActiveDocsResponse)
+def list_active_documents(
+    hours: int = Query(
+        default=_ACTIVE_DOC_DEFAULT_HOURS,
+        ge=1,
+        le=_ACTIVE_DOC_MAX_HOURS,
+        description=f"최근 N시간 (max {_ACTIVE_DOC_MAX_HOURS}=7일)",
+    ),
+) -> ActiveDocsResponse:
+    """진행 중·실패 doc 자동 표시 (W25 D14 Sprint 0).
+
+    /ingest 페이지가 새로고침되어도 처리 현황 카드가 유지되도록, 최근 N시간 내
+    status IN ('queued','running','failed') 인 doc 을 일괄 반환.
+
+    - completed 는 제외 (이미 검색·문서 리스트로 노출)
+    - cancelled 도 제외 (사용자가 명시적 종료)
+    - 정렬: queued_at desc (최신 먼저)
+    """
+    supabase = get_supabase_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+    jobs_resp = (
+        supabase.table("ingest_jobs")
+        .select(
+            "id, doc_id, status, current_stage, attempts, error_msg, "
+            "queued_at, started_at, finished_at"
+        )
+        .in_("status", list(_ACTIVE_DOC_STATUSES))
+        .gte("queued_at", cutoff)
+        .order("queued_at", desc=True)
+        .execute()
+    )
+    job_rows = jobs_resp.data or []
+
+    # doc_id 별 latest job (queued_at desc 정렬이라 첫 row 가 latest)
+    latest_by_doc: dict[str, dict] = {}
+    for row in job_rows:
+        doc_id = row["doc_id"]
+        if doc_id not in latest_by_doc:
+            latest_by_doc[doc_id] = row
+
+    if not latest_by_doc:
+        return ActiveDocsResponse(items=[])
+
+    docs_resp = (
+        supabase.table("documents")
+        .select("id, title, size_bytes")
+        .in_("id", list(latest_by_doc.keys()))
+        .execute()
+    )
+    doc_meta = {d["id"]: d for d in (docs_resp.data or [])}
+
+    items: list[ActiveDocItem] = []
+    for doc_id, row in latest_by_doc.items():
+        meta = doc_meta.get(doc_id)
+        if meta is None:
+            continue  # 이상 케이스: ingest_jobs 는 있는데 documents row 없음
+        items.append(
+            ActiveDocItem(
+                doc_id=doc_id,
+                file_name=meta.get("title") or doc_id,
+                size_bytes=meta.get("size_bytes") or 0,
+                job=JobStatus(
+                    job_id=row["id"],
+                    status=row["status"],
+                    current_stage=row.get("current_stage"),
+                    attempts=row.get("attempts", 0),
+                    error_msg=row.get("error_msg"),
+                    queued_at=row["queued_at"],
+                    started_at=row.get("started_at"),
+                    finished_at=row.get("finished_at"),
+                ),
+            )
+        )
+    return ActiveDocsResponse(items=items)
+
+
 @router.get("/batch-status", response_model=BatchStatusResponse)
 def batch_status(
     ids: str = Query(

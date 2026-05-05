@@ -1,5 +1,6 @@
 import { apiGet, apiPost, apiPostFormData } from './client';
 import type {
+  ActiveDocsResponse,
   AnswerResponse,
   BatchStatusResponse,
   DocumentDetailResponse,
@@ -84,6 +85,11 @@ export const getBatchStatus = (docIds: string[]) =>
   apiGet<BatchStatusResponse>(
     `/documents/batch-status?ids=${docIds.map(encodeURIComponent).join(',')}`,
   );
+
+/** W25 D14 Sprint 0 — /ingest 새로고침 후 진행 현황 복원.
+ *  status IN (queued/running/failed) × 최근 N시간 (default 24h, max 168h). */
+export const getActiveDocs = (hours = 24) =>
+  apiGet<ActiveDocsResponse>(`/documents/active?hours=${hours}`);
 
 export const reingestDocument = (docId: string) =>
   apiPost<ReingestResponse>(`/documents/${docId}/reingest`);

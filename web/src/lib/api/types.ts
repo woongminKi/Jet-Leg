@@ -238,6 +238,19 @@ export interface BatchStatusResponse {
   items: BatchStatusItem[];
 }
 
+/** W25 D14 Sprint 0 — GET /documents/active.
+ *  /ingest 새로고침 후 진행 중·실패 doc 자동 표시 (queued/running/failed × 최근 24h). */
+export interface ActiveDocItem {
+  doc_id: string;
+  file_name: string;
+  size_bytes: number;
+  job: JobStatus;
+}
+
+export interface ActiveDocsResponse {
+  items: ActiveDocItem[];
+}
+
 /** W16 Day 2 — `/stats/trend` 의 단일 시간 bucket.
  *  - metric=search 시: p50_ms / p95_ms / fallback_count 채움
  *  - metric=vision 시: success_count / quota_exhausted_count 채움
