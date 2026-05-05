@@ -9,6 +9,7 @@ import { Card } from '@/components/ui/card';
 import { formatBytes } from '@/lib/format';
 import { inferDocType } from '@/lib/stages';
 import { ApiError, reingestDocument, type JobStatus } from '@/lib/api';
+import { DEFAULT_INGEST_HINTS, RotatingHint } from './rotating-hint';
 import { StageProgress } from './stage-progress';
 
 export interface UploadItemData {
@@ -149,10 +150,15 @@ export function UploadItem({
                 currentStage={job?.current_stage ?? null}
                 status={(job?.status ?? 'queued') as never}
               />
-              {timedOut && (
+              {/* W25 D14 Sprint A — timedOut 시 fixed 메시지, 그 외 진행 중에는 90초마다 회전 안내문. */}
+              {timedOut ? (
                 <p className="text-xs text-muted-foreground">
                   처리가 오래 걸리고 있어요. 잠시 후 새로고침해 보세요.
                 </p>
+              ) : (
+                (job?.status === 'running' || job?.status === 'queued' || !job) && (
+                  <RotatingHint messages={DEFAULT_INGEST_HINTS} />
+                )
               )}
               {job?.status === 'failed' && job.error_msg && (
                 <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
