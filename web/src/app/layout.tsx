@@ -3,6 +3,7 @@ import { Noto_Sans_KR } from 'next/font/google';
 import { Toaster } from 'sonner';
 import './globals.css';
 import { Header } from '@/components/jet-rag/header';
+import { ActiveDocsProvider } from '@/lib/contexts/active-docs-context';
 import { cn } from '@/lib/utils';
 
 const notoSansKr = Noto_Sans_KR({
@@ -25,8 +26,10 @@ export default function RootLayout({
   return (
     <html lang="ko" className={cn('h-full antialiased', notoSansKr.variable)}>
       <body className="min-h-full flex flex-col font-sans">
-        <Header />
-        {children}
+        <ActiveDocsProvider>
+          <Header />
+          {children}
+        </ActiveDocsProvider>
         <Toaster position="top-right" richColors closeButton />
       </body>
     </html>

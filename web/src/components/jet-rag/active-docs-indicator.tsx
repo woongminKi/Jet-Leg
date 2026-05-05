@@ -7,8 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { formatRemainingMs, formatStageProgress } from '@/lib/format';
 import { STAGE_LABELS } from '@/lib/stages';
-import { useActiveDocsRealtime } from '@/lib/hooks/use-active-docs-realtime';
-import { notifyDocTerminal } from '@/lib/notifications/notify-doc';
+import { useActiveDocs } from '@/lib/contexts/active-docs-context';
 
 /** W25 D14 Phase 1 — 글로벌 헤더 indicator + dropdown panel.
  *
@@ -21,9 +20,7 @@ export function ActiveDocsIndicator() {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const { items } = useActiveDocsRealtime((item, terminalStatus) => {
-    notifyDocTerminal(item, terminalStatus);
-  });
+  const { items } = useActiveDocs();
 
   // click-outside / ESC
   useEffect(() => {

@@ -3,9 +3,8 @@
 import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ApiError, uploadDocument, type ActiveDocItem } from '@/lib/api';
-import { useActiveDocsRealtime } from '@/lib/hooks/use-active-docs-realtime';
+import { useActiveDocs } from '@/lib/contexts/active-docs-context';
 import { emitDocUploaded } from '@/lib/notifications/upload-event';
-import { notifyDocTerminal } from '@/lib/notifications/notify-doc';
 import { DropZone } from '@/components/jet-rag/drop-zone';
 import { UploadList } from '@/components/jet-rag/upload-list';
 import type { UploadItemData } from '@/components/jet-rag/upload-item';
@@ -28,11 +27,9 @@ export function IngestUI() {
   // 진행 중 업로드 placeholder (docId 없는 동안 또는 uploadError/duplicated 표시 용)
   const [transientItems, setTransientItems] = useState<UploadItemData[]>([]);
 
-  // 헤더 indicator 와 동일 source — Supabase Realtime 으로 자동 동기.
-  // terminal 시 자동으로 active 에서 빠지고 toast 알림 (notifyDocTerminal).
-  const { items: activeItems } = useActiveDocsRealtime((item, terminalStatus) => {
-    notifyDocTerminal(item, terminalStatus);
-  });
+  // 헤더 indicator 와 동일 source — ActiveDocsProvider 가 singleton 으로 관리.
+  // terminal 시 Provider 가 notifyDocTerminal 호출 (한 번만, 중복 토스트 0).
+  const { items: activeItems } = useActiveDocs();
 
   // 자동 이동 정책 — 단일=자동, 다중=첫 완료만 자동 (W2 §3.M / DE-28)
   // active 가 이미 있으면 백그라운드 진행 중이므로 자동 이동 막아 사용자 의도 보존
