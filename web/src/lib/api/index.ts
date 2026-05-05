@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiPostFormData } from './client';
+import { ApiError, apiGet, apiPost, apiPostFormData } from './client';
 import type {
   ActiveDocsResponse,
   AnswerResponse,
@@ -90,6 +90,39 @@ export const getBatchStatus = (docIds: string[]) =>
  *  status IN (queued/running/failed) × 최근 N시간 (default 24h, max 168h). */
 export const getActiveDocs = (hours = 24) =>
   apiGet<ActiveDocsResponse>(`/documents/active?hours=${hours}`);
+
+/** W25 D14 — 답변 피드백 (👍/👎 + 옵션 코멘트). */
+export interface AnswerFeedbackPayload {
+  query: string;
+  answer_text: string;
+  helpful: boolean;
+  comment?: string | null;
+  doc_id?: string | null;
+  sources_count?: number;
+  model?: string | null;
+}
+
+export interface AnswerFeedbackResponse {
+  feedback_id: number | null;
+  skipped: boolean;
+  note: string | null;
+}
+
+export const submitAnswerFeedback = async (
+  payload: AnswerFeedbackPayload,
+): Promise<AnswerFeedbackResponse> => {
+  const res = await fetch(
+    `${process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000'}/answer/feedback`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+    },
+  );
+  if (!res.ok) throw new ApiError(res.status, await res.text());
+  return res.json() as Promise<AnswerFeedbackResponse>;
+};
 
 export const reingestDocument = (docId: string) =>
   apiPost<ReingestResponse>(`/documents/${docId}/reingest`);

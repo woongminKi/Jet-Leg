@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Search as SearchIcon, Sparkles } from 'lucide-react';
 import { getAnswer } from '@/lib/api';
-import { Badge } from '@/components/ui/badge';
+import { AnswerView } from '@/components/jet-rag/answer-view';
 
 interface AskPageProps {
   searchParams: Promise<{
@@ -23,13 +23,11 @@ function parseTopK(raw: string | undefined): number {
 
 /**
  * W25 D12 — `/ask` LLM RAG 답변 PoC.
+ * W25 D14 — 답변 품질 가시화 (B+E+C): 신뢰도 배지 + [N] 클릭 highlight + 사용자 피드백.
  *
  * - Server Component (RSC) — 질문 도착 시 백엔드 `/answer` 1회 호출 (Gemini 2.5 Flash)
- * - faithfulness: 답변에 인라인 [N] 으로 sources[] 인용 명시 (백엔드 prompt 강제)
+ * - AnswerView (client) — 인라인 [N] 클릭 / 신뢰도 휴리스틱 / 👍/👎 피드백
  * - 검색 0건 → has_search_results=false / answer="제공된 자료에서 해당 정보를 찾지 못했습니다."
- * - PoC v1 — 인용 [N] 클릭 인터랙션 / streaming 은 v2
- *
- * AGENTS.md §1 패턴 — server fetch 첫 SSR / interactivity 필요 없으므로 'use client' 없음.
  */
 export default async function AskPage({ searchParams }: AskPageProps) {
   const { q, doc_id: docIdParam, top_k: topKParam } = await searchParams;
@@ -70,78 +68,8 @@ export default async function AskPage({ searchParams }: AskPageProps) {
       </div>
 
       <div className="container mx-auto px-4 py-6 md:px-6">
-        <section className="mx-auto max-w-3xl space-y-6">
-          <article className="rounded-lg border border-border bg-card px-5 py-5 shadow-sm">
-            <p className="whitespace-pre-line text-[15px] leading-relaxed text-foreground">
-              {response.answer}
-            </p>
-            {!response.has_search_results && (
-              <p className="mt-3 text-xs text-muted-foreground">
-                관련 자료를 찾지 못했어요. 다른 키워드로{' '}
-                <Link
-                  href={`/search?q=${encodeURIComponent(query)}`}
-                  className="text-primary hover:underline"
-                >
-                  검색
-                </Link>
-                해 보세요.
-              </p>
-            )}
-          </article>
-
-          {response.sources.length > 0 && (
-            <div className="space-y-3">
-              <h2 className="text-sm font-medium text-muted-foreground">출처 ({response.sources.length})</h2>
-              <ol className="space-y-3">
-                {response.sources.map((src, i) => (
-                  <SourceCard key={src.chunk_id} index={i + 1} source={src} />
-                ))}
-              </ol>
-            </div>
-          )}
-        </section>
+        <AnswerView query={query} response={response} docId={docId} />
       </div>
     </main>
-  );
-}
-
-function SourceCard({
-  index,
-  source,
-}: {
-  index: number;
-  source: import('@/lib/api').AnswerSource;
-}) {
-  const docTitle = source.doc_title || '(제목 없음)';
-  const docHref = `/doc/${source.doc_id}`;
-  return (
-    <li className="rounded-md border border-border bg-card px-4 py-3">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <Badge variant="outline" className="font-mono text-[11px]">
-          [{index}]
-        </Badge>
-        <Link
-          href={docHref}
-          className="text-sm font-medium text-foreground hover:underline"
-        >
-          {docTitle}
-        </Link>
-        {/* page 0 은 metadata 미상 의미 — 표시 회피 (W25 D12 PoC 가드). */}
-        {source.page !== null && source.page > 0 && (
-          <span className="text-xs text-muted-foreground">p.{source.page}</span>
-        )}
-        {source.section_title && (
-          <span className="truncate text-xs text-muted-foreground">
-            · {source.section_title}
-          </span>
-        )}
-        <span className="ml-auto text-[11px] font-mono text-muted-foreground/70">
-          chunk #{source.chunk_idx}
-        </span>
-      </div>
-      <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-muted-foreground">
-        {source.snippet}
-      </p>
-    </li>
   );
 }

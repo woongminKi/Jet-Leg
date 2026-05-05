@@ -290,3 +290,88 @@ def answer(
         took_ms=int((time.monotonic() - start_t) * 1000),
         query_parsed=QueryParsedInfo(**query_parsed),
     )
+
+
+# ============================================================
+# POST /answer/feedback — W25 D14 사용자 피드백 (👍/👎 + 옵션 코멘트)
+# ============================================================
+
+class AnswerFeedbackRequest(BaseModel):
+    query: str
+    answer_text: str
+    helpful: bool
+    comment: str | None = None
+    doc_id: str | None = None
+    sources_count: int = 0
+    model: str | None = None
+
+
+class AnswerFeedbackResponse(BaseModel):
+    feedback_id: int | None
+    skipped: bool = False
+    note: str | None = None
+
+
+# 마이그 011 (answer_feedback) 미적용 시 첫 실패 후 비활성 — 백엔드 부하 0
+_feedback_disabled = False
+
+
+def _disable_feedback(reason: Exception) -> None:
+    global _feedback_disabled
+    if not _feedback_disabled:
+        _feedback_disabled = True
+        logger.warning(
+            "answer_feedback INSERT 첫 실패 — 이번 프로세스 동안 비활성 "
+            "(마이그 011 적용 후 백엔드 재시작 시 회복): %s",
+            reason,
+        )
+
+
+def reset_feedback_disabled() -> None:
+    """단위 테스트 용 — 모듈 flag 리셋."""
+    global _feedback_disabled
+    _feedback_disabled = False
+
+
+@router.post("/answer/feedback", response_model=AnswerFeedbackResponse)
+def submit_answer_feedback(payload: AnswerFeedbackRequest) -> AnswerFeedbackResponse:
+    """답변에 대한 사용자 피드백 저장 (W25 D14).
+
+    답변 자체는 stateless 라 query+answer_text 보존. 향후 RAGAS 정성 ground truth +
+    답변 품질 회귀 추적용. 마이그 011 미적용 시 graceful skip.
+    """
+    if _feedback_disabled:
+        return AnswerFeedbackResponse(
+            feedback_id=None,
+            skipped=True,
+            note="answer_feedback 테이블 미존재 — 마이그 011 적용 필요",
+        )
+
+    settings = get_settings()
+    try:
+        client = get_supabase_client()
+        resp = (
+            client.table("answer_feedback")
+            .insert(
+                {
+                    "user_id": str(settings.default_user_id),
+                    "doc_id": payload.doc_id,
+                    "query": payload.query,
+                    "answer_text": payload.answer_text,
+                    "helpful": payload.helpful,
+                    "comment": payload.comment,
+                    "sources_count": payload.sources_count,
+                    "model": payload.model,
+                }
+            )
+            .execute()
+        )
+        feedback_id = (resp.data or [{}])[0].get("id")
+        return AnswerFeedbackResponse(feedback_id=feedback_id)
+    except Exception as exc:  # noqa: BLE001
+        _disable_feedback(exc)
+        return AnswerFeedbackResponse(
+            feedback_id=None,
+            skipped=True,
+            note="피드백 저장 일시 실패 — 마이그 011 미적용 가능",
+        )
