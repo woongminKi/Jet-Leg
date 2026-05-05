@@ -124,6 +124,53 @@ export const submitAnswerFeedback = async (
   return res.json() as Promise<AnswerFeedbackResponse>;
 };
 
+/** W25 D14 — RAGAS 정량 평가 (Faithfulness + AnswerRelevancy + 옵션 메트릭). */
+export interface RagasMetrics {
+  faithfulness: number | null;
+  answer_relevancy: number | null;
+  context_precision: number | null;
+  context_recall: number | null;
+  answer_correctness: number | null;
+}
+
+export interface RagasEvalResponse {
+  metrics: RagasMetrics;
+  judge_model: string | null;
+  took_ms: number | null;
+  cached: boolean;
+  skipped: boolean;
+  note: string | null;
+  created_at: string | null;
+}
+
+export interface RagasEvalPayload {
+  query: string;
+  answer_text: string;
+  doc_id?: string | null;
+  contexts: string[];
+}
+
+const _API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
+
+export const getRagasEval = (query: string, docId?: string | null) => {
+  const qs = new URLSearchParams({ query });
+  if (docId) qs.set('doc_id', docId);
+  return apiGet<RagasEvalResponse>(`/answer/eval-ragas?${qs.toString()}`);
+};
+
+export const submitRagasEval = async (
+  payload: RagasEvalPayload,
+): Promise<RagasEvalResponse> => {
+  const res = await fetch(`${_API_BASE}/answer/eval-ragas`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new ApiError(res.status, await res.text());
+  return res.json() as Promise<RagasEvalResponse>;
+};
+
 export const reingestDocument = (docId: string) =>
   apiPost<ReingestResponse>(`/documents/${docId}/reingest`);
 

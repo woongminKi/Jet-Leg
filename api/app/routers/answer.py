@@ -375,3 +375,189 @@ def submit_answer_feedback(payload: AnswerFeedbackRequest) -> AnswerFeedbackResp
             skipped=True,
             note="피드백 저장 일시 실패 — 마이그 011 미적용 가능",
         )
+
+
+# ============================================================
+# /answer/eval-ragas — W25 D14 RAGAS 정량 평가 (캐시 + 측정)
+# ============================================================
+
+class RagasEvalRequest(BaseModel):
+    query: str
+    answer_text: str
+    doc_id: str | None = None
+    contexts: list[str]  # 평가용 출처 본문 (보통 sources 의 chunk text)
+
+
+class RagasMetricsModel(BaseModel):
+    faithfulness: float | None = None
+    answer_relevancy: float | None = None
+    context_precision: float | None = None
+    context_recall: float | None = None
+    answer_correctness: float | None = None
+
+
+class RagasEvalResponse(BaseModel):
+    metrics: RagasMetricsModel
+    judge_model: str | None
+    took_ms: int | None
+    cached: bool = False
+    skipped: bool = False
+    note: str | None = None
+    created_at: str | None = None
+
+
+_ragas_eval_disabled = False
+
+
+def _disable_ragas_eval(reason: Exception) -> None:
+    global _ragas_eval_disabled
+    if not _ragas_eval_disabled:
+        _ragas_eval_disabled = True
+        logger.warning(
+            "answer_ragas_evals INSERT 첫 실패 — 이번 프로세스 동안 비활성 "
+            "(마이그 012 적용 후 백엔드 재시작 시 회복): %s",
+            reason,
+        )
+
+
+def reset_ragas_eval_disabled() -> None:
+    """단위 테스트 용."""
+    global _ragas_eval_disabled
+    _ragas_eval_disabled = False
+
+
+def _query_ragas_cache(client, *, query: str, doc_id: str | None):
+    """가장 최근 (query, doc_id) 매칭 row 1건 반환 (없으면 None)."""
+    try:
+        q = (
+            client.table("answer_ragas_evals")
+            .select("metrics, model_judge, took_ms, created_at")
+            .eq("query", query)
+            .order("created_at", desc=True)
+            .limit(1)
+        )
+        if doc_id:
+            q = q.eq("doc_id", doc_id)
+        else:
+            q = q.is_("doc_id", "null")
+        resp = q.execute()
+        rows = resp.data or []
+        return rows[0] if rows else None
+    except Exception as exc:  # noqa: BLE001
+        _disable_ragas_eval(exc)
+        return None
+
+
+@router.get("/answer/eval-ragas", response_model=RagasEvalResponse)
+def get_ragas_eval(
+    query: str = Query(..., min_length=1, max_length=_MAX_QUERY_LEN),
+    doc_id: str | None = Query(default=None),
+) -> RagasEvalResponse:
+    """캐시 조회 — 같은 query + doc_id 의 가장 최근 평가 결과 반환 (없으면 빈 응답)."""
+    if _ragas_eval_disabled:
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(),
+            judge_model=None,
+            took_ms=None,
+            skipped=True,
+            note="answer_ragas_evals 테이블 미존재 — 마이그 012 적용 필요",
+        )
+    import unicodedata as _u
+
+    clean_q = _u.normalize("NFC", query.strip())
+    client = get_supabase_client()
+    row = _query_ragas_cache(client, query=clean_q, doc_id=doc_id)
+    if not row:
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(),
+            judge_model=None,
+            took_ms=None,
+            cached=False,
+        )
+    metrics_dict = row.get("metrics") or {}
+    return RagasEvalResponse(
+        metrics=RagasMetricsModel(**metrics_dict),
+        judge_model=row.get("model_judge"),
+        took_ms=row.get("took_ms"),
+        cached=True,
+        created_at=row.get("created_at"),
+    )
+
+
+@router.post("/answer/eval-ragas", response_model=RagasEvalResponse)
+def submit_ragas_eval(payload: RagasEvalRequest) -> RagasEvalResponse:
+    """RAGAS 평가 실행 + DB 저장. 캐시 hit 시 재호출 회피."""
+    if _ragas_eval_disabled:
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(),
+            judge_model=None,
+            took_ms=None,
+            skipped=True,
+            note="answer_ragas_evals 테이블 미존재 — 마이그 012 적용 필요",
+        )
+
+    import unicodedata as _u
+    from app.services.ragas_eval import RagasUnavailable, evaluate_single
+
+    clean_q = _u.normalize("NFC", payload.query.strip())
+    settings = get_settings()
+    client = get_supabase_client()
+
+    # 캐시 우선 — 같은 query+answer_text+doc_id 매칭 시 재사용
+    cached = _query_ragas_cache(client, query=clean_q, doc_id=payload.doc_id)
+    if cached:
+        metrics_dict = cached.get("metrics") or {}
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(**metrics_dict),
+            judge_model=cached.get("model_judge"),
+            took_ms=cached.get("took_ms"),
+            cached=True,
+            created_at=cached.get("created_at"),
+        )
+
+    # 평가 실행
+    try:
+        result = evaluate_single(
+            query=clean_q, answer=payload.answer_text, contexts=payload.contexts,
+        )
+    except RagasUnavailable as exc:
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(),
+            judge_model=None,
+            took_ms=None,
+            skipped=True,
+            note=f"RAGAS 평가 불가: {exc}",
+        )
+
+    # DB 저장 (graceful)
+    metrics_dict = result.metrics.to_dict()
+    try:
+        client.table("answer_ragas_evals").insert(
+            {
+                "user_id": str(settings.default_user_id),
+                "doc_id": payload.doc_id,
+                "query": clean_q,
+                "answer_text": payload.answer_text,
+                "contexts": payload.contexts,
+                "metrics": metrics_dict,
+                "model_judge": result.judge_model,
+                "took_ms": result.took_ms,
+            }
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        _disable_ragas_eval(exc)
+        # 저장 실패해도 평가 결과는 반환
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(**metrics_dict),
+            judge_model=result.judge_model,
+            took_ms=result.took_ms,
+            cached=False,
+            note="평가 결과 캐시 저장 실패 — 마이그 012 미적용 가능",
+        )
+
+    return RagasEvalResponse(
+        metrics=RagasMetricsModel(**metrics_dict),
+        judge_model=result.judge_model,
+        took_ms=result.took_ms,
+        cached=False,
+    )
