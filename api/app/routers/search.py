@@ -92,6 +92,18 @@ _RERANKER_TOP_K = 50
 # 효과는 multi-doc 검색에서 발휘 (doc-scope `?doc_id=...` 시 영향 0).
 _DOC_EMBEDDING_RRF_ENABLED_DEFAULT = "false"
 
+# W25 D14+1 D2 — Query expansion (도메인 동의어 사전).
+# PGroonga sparse query 의 외래어/약어/한자어 0 hits 회귀를 동의어 추가로 회복.
+# dense path 는 BGE-M3 가 의미적 처리 → expansion 미적용.
+# opt-in ENV — default false (정량 baseline 후 default 결정).
+_QUERY_EXPANSION_ENABLED_DEFAULT = "false"
+
+# W25 D14+1 D4 — HyDE (Hypothetical Document Embedding).
+# query → Gemini 가상 문단 → (query + 문단) embedding → dense path 검색.
+# 짧은 키워드 query 의 의미적 매칭 강화. latency +1~2s, Gemini 호출 1회.
+# opt-in ENV (default false). cache 강제 (같은 query 반복 시 Gemini 호출 0).
+_HYDE_ENABLED_DEFAULT = "false"
+
 # W25 D8 Phase 2 — 메뉴 footer 가드: 1차 시도 실패 → 롤백 / 후속 sprint 신호로 보존.
 # 시도 결과 (work-log/2026-05-04 W25 D8 Phase 2 메뉴 footer 가드.md):
 #   - 단순 패턴 매칭 → 정답 청크 (idx 37/38/43) 도 함께 깎임 → G-S-006 0.50→0.03 악화
@@ -129,26 +141,30 @@ def _strip_korean_particle(token: str) -> str:
     return cleaned
 
 
-def _build_pgroonga_query(q: str) -> str:
+def _build_pgroonga_query(q: str, *, expansion_enabled: bool = False) -> str:
     """W25 D10/D11 차수 D-a + D-a-2 — PGroonga `&@~` multi-token AND → OR 변환 + 조사 strip.
+    W25 D14+1 D2 — query expansion (도메인 동의어 사전) 옵션 추가.
 
     PGroonga query mode (`&@~`) 는 query 내 모든 토큰이 같은 chunk 에 모두 매칭돼야
     hit 가 잡힘 (AND 매칭). 사용자 자연어 query 는 3~5 단어라 한 단어만 vocab 부재여도
     전체 0 hits. OR 변환으로 한 단어라도 매칭하는 chunk 를 sparse 결과에 포함시켜
     RRF 가산이 가능하게 함 (dense path 와 정상 합산).
 
-    W25 D9 진단 (work-log/2026-05-04 W25 D9 phase2-d-diagnosis.md) 직접 검증:
-        '소나타 전장' → 0 hits (AND, 본문 vocab 'Sonata' 만 있고 '소나타' 0건)
-        '소나타 OR 전장' → 2 hits (OR — '전장' 단독 매칭으로 sparse 회복)
-        '전폭은' → 0 hits (Mecab 조사 미분해)
-        '전폭' (조사 strip) → 매칭 가능
+    expansion_enabled=True 시: 조사 strip 후 토큰별 동의어 (외래어/약어/한자어) 추가.
+    예: "쏘나타 전장" → "쏘나타 OR sonata OR Sonata OR 전장 OR 전체길이 OR 길이"
 
-    단일 토큰 query 는 변환 무의미 → 조사 strip 만 적용 후 반환.
+    단일 토큰 query 도 expansion 적용 (동의어 추가 시 의미 있음).
+    동의어 없는 토큰은 원본 그대로.
     """
     tokens = [_strip_korean_particle(t) for t in q.strip().split() if t]
     tokens = [t for t in tokens if t]  # strip 결과 빈 토큰 제외 (방어)
+    if not tokens:
+        return q.strip()
+    if expansion_enabled:
+        from app.services.query_expansion import build_pgroonga_query as _expand
+        return _expand(" ".join(tokens))
     if len(tokens) <= 1:
-        return tokens[0] if tokens else q.strip()
+        return tokens[0]
     return " OR ".join(tokens)
 
 
@@ -203,6 +219,9 @@ class QueryParsedInfo(BaseModel):
     # 가산이 적용된 doc 수 (doc_embedding NULL 인 doc 제외).
     doc_embedding_rrf_used: bool = False
     doc_embedding_hits: int = 0
+    # W25 D14+1 D4 — HyDE 사용 여부 + 실패 분류.
+    hyde_used: bool = False
+    hyde_fallback_reason: str | None = None
 
 
 class SearchResponse(BaseModel):
@@ -296,13 +315,38 @@ def search(
     #    - transient (5xx / network) → sparse-only fallback (degraded ranking 수용)
     #    - 영구 실패 (401/404/400 등 4xx) → 503 raise. silent degradation 방지.
     #      (한 달 동안 토큰 만료를 모르고 sparse-only 운영하는 위험 차단)
+    #
+    # W25 D14+1 D4 — HyDE 옵션:
+    #   `JETRAG_HYDE_ENABLED=true` 시 query → Gemini hypothetical doc → (query + doc) 임베딩.
+    #   실패 시 원본 query 임베딩으로 fallback (검색 자체 차단 X).
     # ------------------------------------------------------------------
     dense_vec: list[float] | None = None
     fallback_reason: str | None = None
     embed_cache_hit: bool = False
+    hyde_used = False
+    hyde_fallback_reason: str | None = None
+
+    # HyDE 활성 시 query 변환 (Gemini)
+    embed_input = clean_q
+    hyde_enabled = (
+        os.environ.get("JETRAG_HYDE_ENABLED", _HYDE_ENABLED_DEFAULT).lower() == "true"
+    )
+    if hyde_enabled:
+        try:
+            from app.adapters.impl.gemini_llm import GeminiLLMProvider
+            from app.services.hyde import generate_hypothetical_doc
+            llm = GeminiLLMProvider()
+            hypothetical = generate_hypothetical_doc(llm, clean_q)
+            # query + hypothetical doc concat — query 의미 보존 + 가상 문단 의미 보강
+            embed_input = f"{clean_q}\n{hypothetical}"
+            hyde_used = True
+        except Exception as exc:  # noqa: BLE001
+            hyde_fallback_reason = "error"
+            logger.warning("HyDE 실패 → 원본 query 로 fallback: %s", exc)
+
     try:
         provider = get_bgem3_provider()
-        dense_vec = provider.embed_query(clean_q)
+        dense_vec = provider.embed_query(embed_input)
         # W4-Q-3 — embed_query 직후 LRU hit 여부 스냅샷.
         # race condition 한계 (provider 의 docstring 참조): 멀티 스레드 환경에서
         # 타 호출자가 사이에 끼어들면 hit/miss 가 뒤바뀌어 보일 수 있음. 메트릭 비율 측정 용도라 수용.
@@ -350,7 +394,15 @@ def search(
         rpc_top_k = _RPC_TOP_K
 
     # W25 D10 차수 D-a — sparse path 의 PGroonga query 만 OR 변환. dense path 는 무관.
-    pg_q = _build_pgroonga_query(clean_q)
+    # W25 D14+1 D2 — Query expansion (opt-in ENV `JETRAG_QUERY_EXPANSION`).
+    query_expansion_enabled = (
+        os.environ.get(
+            "JETRAG_QUERY_EXPANSION",
+            _QUERY_EXPANSION_ENABLED_DEFAULT,
+        ).lower()
+        == "true"
+    )
+    pg_q = _build_pgroonga_query(clean_q, expansion_enabled=query_expansion_enabled)
 
     # W20 Day 2 #74 — mode 별 RPC 분기 (008 split RPC). 008 미적용 시 graceful fallback.
     used_split_rpc = False
@@ -512,6 +564,8 @@ def search(
         fallback_reason=fallback_reason,
         reranker_used=reranker_used,
         reranker_fallback_reason=reranker_fallback_reason,
+        hyde_used=hyde_used,
+        hyde_fallback_reason=hyde_fallback_reason,
     )
 
     if not rpc_rows:
@@ -623,12 +677,16 @@ def search(
                 cosine_by_doc[did] = sim
 
         if cosine_by_doc:
-            # cosine sim 내림차순 → rank → 1/(k+rank) RRF 가산
+            # W25 D14+1 D3 — ablation 결과 (golden_v0.5_auto 43건 multi-doc):
+            # k=10, weight=2.0 sweet spot — top-1 +2.32pp (0.9070 → 0.9302), MRR +1.55pp.
+            # k=60 (chunks RRF 와 동일) 또는 weight 너무 크면 (5.0) 효과 0 — chunks RRF 와의 균형 중요.
+            weight = float(os.environ.get("JETRAG_DOC_EMBEDDING_RRF_WEIGHT", "2.0"))
+            k_rrf = int(os.environ.get("JETRAG_DOC_EMBEDDING_RRF_K", "10"))
             sorted_by_cos = sorted(
                 cosine_by_doc.items(), key=lambda x: x[1], reverse=True
             )
             for rank, (did, _sim) in enumerate(sorted_by_cos, start=1):
-                doc_score[did] = doc_score.get(did, 0.0) + 1.0 / (_RRF_K + rank)
+                doc_score[did] = doc_score.get(did, 0.0) + weight * (1.0 / (k_rrf + rank))
             doc_embedding_rrf_used = True
             doc_embedding_hits = len(cosine_by_doc)
 
@@ -644,6 +702,8 @@ def search(
         reranker_fallback_reason=query_parsed.reranker_fallback_reason,
         doc_embedding_rrf_used=doc_embedding_rrf_used,
         doc_embedding_hits=doc_embedding_hits,
+        hyde_used=query_parsed.hyde_used,
+        hyde_fallback_reason=query_parsed.hyde_fallback_reason,
     )
 
     # ------------------------------------------------------------------

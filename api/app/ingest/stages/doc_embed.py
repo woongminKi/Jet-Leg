@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import unicodedata
 
 from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
 from app.adapters.parser import ExtractionResult
@@ -62,11 +63,18 @@ def run_doc_embed_stage(
 def _pick_source(
     *, summary: str | None, implications: str | None, raw_text: str
 ) -> str | None:
+    """W25 D14+1 D1 — 임베딩 입력 NFC 정규화 (한국어 chunks 와 일관).
+
+    HWP/HWPX 의 raw_text 가 NFD 일 때 doc_embedding 의 임베딩 분포가 chunks 와 어긋남
+    → multi-doc 검색 doc-level RRF 가산의 신뢰도 저하 회피.
+    """
     if summary and summary.strip():
         parts = [summary.strip()]
         if implications and implications.strip():
             parts.append(implications.strip())
-        return "\n\n".join(parts)
+        return unicodedata.normalize("NFC", "\n\n".join(parts))
     if raw_text and raw_text.strip():
-        return raw_text[:_RAW_FALLBACK_CHARS].strip()
+        return unicodedata.normalize(
+            "NFC", raw_text[:_RAW_FALLBACK_CHARS].strip()
+        )
     return None

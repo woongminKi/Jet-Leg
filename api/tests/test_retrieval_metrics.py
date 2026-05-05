@@ -27,8 +27,10 @@ class RecallAtKTest(unittest.TestCase):
 
     def test_k_caps_predictions(self) -> None:
         from app.services.retrieval_metrics import recall_at_k
-        # k=2 면 top-2 만 봄 — [1, 99] 중 1만 hit → 1/3
-        self.assertAlmostEqual(recall_at_k([1, 99, 2, 3], {1, 2, 3}, k=2), 1 / 3)
+        # D1 정정 — Recall@K 분모는 cap K (nDCG IDCG 와 일관).
+        # k=2, predicted=[1, 99, 2, 3], relevant={1,2,3}:
+        # hit_score = 1.0 (chunk 1) / max_score (cap k=2) = 2.0 → 0.5
+        self.assertAlmostEqual(recall_at_k([1, 99, 2, 3], {1, 2, 3}, k=2), 0.5)
 
     def test_empty_predictions(self) -> None:
         from app.services.retrieval_metrics import recall_at_k
@@ -86,6 +88,68 @@ class NDCGTest(unittest.TestCase):
         self.assertAlmostEqual(
             ndcg_at_k([1, 2, 99], {1, 2, 3, 4, 5}, k=2), 1.0
         )
+
+
+class GradedRelevanceTest(unittest.TestCase):
+    """D1 정정 — relevant + acceptable graded relevance 동작 검증."""
+
+    def test_recall_at_k_with_acceptable(self) -> None:
+        from app.services.retrieval_metrics import recall_at_k
+        # relevant {1, 2}, acceptable {3}, top-3 = [1, 99, 3]
+        # hit_score = 1.0 (chunk 1) + 0 + 0.5 (chunk 3) = 1.5
+        # max_score (cap k=10) = 1.0+1.0+0.5 = 2.5
+        # recall = 1.5 / 2.5 = 0.6
+        result = recall_at_k([1, 99, 3], {1, 2}, k=10, acceptable_chunks={3})
+        self.assertAlmostEqual(result, 1.5 / 2.5, places=4)
+
+    def test_recall_acceptable_only_no_relevant(self) -> None:
+        """relevant 없고 acceptable hit 만 있을 때."""
+        from app.services.retrieval_metrics import recall_at_k
+        # relevant {}, acceptable {3}, top-1 = [3]
+        # hit_score = 0.5, max = 0.5 → 1.0
+        result = recall_at_k([3, 99], set(), k=10, acceptable_chunks={3})
+        self.assertAlmostEqual(result, 1.0, places=4)
+
+    def test_recall_legacy_binary_when_acceptable_none(self) -> None:
+        """acceptable_chunks=None 시 기존 binary 동작 유지 — backward compatible."""
+        from app.services.retrieval_metrics import recall_at_k
+        self.assertEqual(recall_at_k([1, 2, 3], {1, 2, 3}, k=10), 1.0)
+        self.assertAlmostEqual(recall_at_k([1, 99], {1, 2, 3}, k=10), 1 / 3)
+
+    def test_mrr_relevant_priority_over_acceptable(self) -> None:
+        """relevant rank 가 acceptable 보다 앞이면 relevant 의 1/rank."""
+        from app.services.retrieval_metrics import mrr
+        # ranking [1, 3] / relevant {1} / acceptable {3} → 1.0 (rank 1 relevant)
+        result = mrr([1, 3], {1}, k=10, acceptable_chunks={3})
+        self.assertEqual(result, 1.0)
+
+    def test_mrr_acceptable_only_returns_half(self) -> None:
+        """relevant 0 hit, acceptable 만 hit — 0.5 / rank."""
+        from app.services.retrieval_metrics import mrr
+        # ranking [99, 3] / relevant {1} / acceptable {3} → 0.5 / 2 = 0.25
+        result = mrr([99, 3], {1}, k=10, acceptable_chunks={3})
+        self.assertAlmostEqual(result, 0.25, places=4)
+
+    def test_ndcg_with_acceptable(self) -> None:
+        """nDCG graded relevance 계산 정확성."""
+        from app.services.retrieval_metrics import ndcg_at_k
+        import math
+        # ranking [1, 3] / relevant {1} (1.0) / acceptable {3} (0.5)
+        # DCG = 1.0/log2(2) + 0.5/log2(3) = 1.0 + 0.5/log2(3)
+        # IDCG = 1.0/log2(2) + 0.5/log2(3) = 동일 → nDCG=1.0
+        result = ndcg_at_k([1, 3], {1}, k=10, acceptable_chunks={3})
+        self.assertAlmostEqual(result, 1.0, places=4)
+
+    def test_ndcg_acceptable_in_wrong_position(self) -> None:
+        """acceptable 이 정답 위치보다 앞에 있어도 graded score 적용."""
+        from app.services.retrieval_metrics import ndcg_at_k
+        # ranking [3, 1] / relevant {1} (rank 2) / acceptable {3} (rank 1)
+        # DCG = 0.5/log2(2) + 1.0/log2(3)
+        # IDCG (ideal) = 1.0/log2(2) + 0.5/log2(3)
+        # nDCG < 1.0
+        result = ndcg_at_k([3, 1], {1}, k=10, acceptable_chunks={3})
+        self.assertLess(result, 1.0)
+        self.assertGreater(result, 0.5)
 
 
 class AggregateMetricsTest(unittest.TestCase):

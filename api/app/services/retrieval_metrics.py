@@ -1,10 +1,16 @@
 """W25 D14+1 (E) — 검색 retrieval 메트릭 (Recall@K / MRR / nDCG@K).
 
-골든셋 (query → 정답 chunk_idx set) 기반 측정.
-정답 라벨 = binary relevance (해당 chunk_idx 가 relevant set 에 있으면 1, 아니면 0).
+D1 정정 (W25 D14+1 sprint 종합):
+- graded relevance 도입 — relevant (1.0) + acceptable (0.5) 두 단계
+- QA 의 narrowness 발견 직접 해결 (`expected_chunk_idx_hints` strict set 한계)
+- 메트릭 함수에 acceptable_chunks 옵션 인자 추가 (legacy 호출은 binary 그대로)
+
+골든셋 schema (CSV 또는 JSON):
+- relevant_chunks: 라벨러가 명시적으로 정답으로 정한 chunks (weight 1.0)
+- acceptable_chunks: 사용자 의도에 적합하지만 narrow 정답은 아닌 chunks (weight 0.5)
+                    BGE-M3 cosine ≥ 0.7 자동 라벨 가능 (auto_goldenset.py)
 
 본 모듈은 list[int] 단순 입력 받아 메트릭만 계산 — 외부 의존성 0.
-스크립트 (`evals/eval_retrieval_metrics.py`) 가 search 응답에서 chunk_idx list 추출 후 호출.
 """
 
 from __future__ import annotations
@@ -13,51 +19,101 @@ import math
 from typing import Iterable
 
 
-def recall_at_k(
-    predicted_chunks: list[int], relevant_chunks: set[int] | Iterable[int], k: int = 10
+def _relevance_score(
+    chunk_idx: int,
+    relevant_set: set[int],
+    acceptable_set: set[int] | None = None,
 ) -> float:
-    """Recall@K — top-K 예측 중 정답 chunks 가 잡힌 비율.
+    """chunk 의 graded relevance score.
 
-    relevant 가 비어있으면 정의 불가 → 0.0 반환.
+    - relevant: 1.0
+    - acceptable (relevant 와 disjoint): 0.5
+    - 기타: 0.0
+
+    acceptable_set None 시 binary relevance 와 동일.
+    """
+    if chunk_idx in relevant_set:
+        return 1.0
+    if acceptable_set and chunk_idx in acceptable_set:
+        return 0.5
+    return 0.0
+
+
+def recall_at_k(
+    predicted_chunks: list[int],
+    relevant_chunks: set[int] | Iterable[int],
+    k: int = 10,
+    acceptable_chunks: set[int] | Iterable[int] | None = None,
+) -> float:
+    """Recall@K — top-K 예측 중 (relevant + acceptable) 가 잡힌 비율 (graded).
+
+    분자: top-K 내 hits 의 graded score 합 (relevant=1.0, acceptable=0.5)
+    분모: 이상적 max score (relevant 1.0 × |relevant| + acceptable 0.5 × |acceptable|, cap K)
+
+    acceptable None 시 binary recall 과 동일.
+    relevant 가 비어있으면 0.0.
     """
     relevant_set = set(relevant_chunks)
-    if not relevant_set:
+    accept_set = set(acceptable_chunks) if acceptable_chunks else None
+    if not relevant_set and not accept_set:
         return 0.0
     top_k = predicted_chunks[:k]
-    hits = sum(1 for c in top_k if c in relevant_set)
-    return hits / len(relevant_set)
+    hit_score = sum(_relevance_score(c, relevant_set, accept_set) for c in top_k)
+    # 이상적 max — relevant 부터 채우고 acceptable 으로 채움 (cap K)
+    sorted_relevances = (
+        [1.0] * len(relevant_set)
+        + ([0.5] * len(accept_set or set())) * 1
+    )
+    sorted_relevances = sorted(sorted_relevances, reverse=True)[:k]
+    max_score = sum(sorted_relevances)
+    if max_score <= 0:
+        return 0.0
+    return hit_score / max_score
 
 
 def mrr(
-    predicted_chunks: list[int], relevant_chunks: set[int] | Iterable[int], k: int = 10
+    predicted_chunks: list[int],
+    relevant_chunks: set[int] | Iterable[int],
+    k: int = 10,
+    acceptable_chunks: set[int] | Iterable[int] | None = None,
 ) -> float:
-    """Mean Reciprocal Rank — top-K 내 첫 정답 chunk 의 1/rank.
+    """Mean Reciprocal Rank — top-K 내 첫 hit 의 1/rank.
 
-    top-K 안에 정답 0개면 0.0.
+    relevant 우선 — relevant rank 가 acceptable 보다 앞이면 relevant 만 인정.
+    relevant 0 + acceptable hit 만 있으면 0.5 weight 의 1/rank.
     """
     relevant_set = set(relevant_chunks)
+    accept_set = set(acceptable_chunks) if acceptable_chunks else set()
     for i, c in enumerate(predicted_chunks[:k], start=1):
         if c in relevant_set:
             return 1.0 / i
+        if c in accept_set:
+            return 0.5 / i
     return 0.0
 
 
 def ndcg_at_k(
-    predicted_chunks: list[int], relevant_chunks: set[int] | Iterable[int], k: int = 10
+    predicted_chunks: list[int],
+    relevant_chunks: set[int] | Iterable[int],
+    k: int = 10,
+    acceptable_chunks: set[int] | Iterable[int] | None = None,
 ) -> float:
-    """nDCG@K (binary relevance) — DCG / IDCG.
+    """nDCG@K (graded relevance) — DCG / IDCG.
 
+    relevance: relevant=1.0, acceptable=0.5, 기타=0.
     DCG = Σ (rel_i / log2(i+2)), i=0..k-1.
-    IDCG = 정답 chunks 가 모두 top 에 모인 이상적 DCG (cap K).
-    relevant 가 비어있으면 0.0.
+    IDCG = 정답 chunks 가 graded score 내림차순 ideal sort 후 cap K.
     """
     relevant_set = set(relevant_chunks)
-    if not relevant_set:
+    accept_set = set(acceptable_chunks) if acceptable_chunks else None
+    if not relevant_set and not accept_set:
         return 0.0
-    top_k_rel = [1.0 if c in relevant_set else 0.0 for c in predicted_chunks[:k]]
+    top_k_rel = [_relevance_score(c, relevant_set, accept_set) for c in predicted_chunks[:k]]
     dcg = sum(r / math.log2(i + 2) for i, r in enumerate(top_k_rel))
-    ideal_count = min(len(relevant_set), k)
-    idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_count))
+    # IDCG — ideal ranking (relevant 먼저 1.0 × n_r, acceptable 0.5 × n_a, cap K)
+    ideal_relevances = [1.0] * len(relevant_set) + [0.5] * len(accept_set or set())
+    ideal_relevances = sorted(ideal_relevances, reverse=True)[:k]
+    idcg = sum(r / math.log2(i + 2) for i, r in enumerate(ideal_relevances))
     return dcg / idcg if idcg > 0 else 0.0
 
 

@@ -32,9 +32,13 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# W25 D14+1 D5 — text-classification pipeline + [SEP] separator.
+# 이전 (sentence-similarity pipeline) 은 cross-encoder 미작동 (W25 D14+1 E 정량 회귀
+# -50% 발견). curl 직접 호출 검증으로 text-classification + "{q} [SEP] {p}" 형식이
+# query-dependent ranking 정상 작동 확인. score 0~1 sigmoid 적용된 cross-encoder.
 _URL = (
     "https://router.huggingface.co/hf-inference/"
-    "models/BAAI/bge-reranker-v2-m3/pipeline/sentence-similarity"
+    "models/BAAI/bge-reranker-v2-m3/pipeline/text-classification"
 )
 _MAX_ATTEMPTS = 3
 _BASE_BACKOFF_SECONDS = 5.0
@@ -127,19 +131,19 @@ class BGERerankerHFProvider:
     def _call_hf(self, query: str, passages: list[str]) -> list[float]:
         """HF Inference API 호출 (retry 포함).
 
-        BGE-reranker-v2-m3 의 sentence-similarity pipeline 응답은
-        `[float, ...]` — query 와 각 sentence 의 cross-encoder score.
+        W25 D14+1 D5 — text-classification + [SEP] schema:
+            inputs = ["query [SEP] passage1", "query [SEP] passage2", ...]
+            response = [{"label": "LABEL_0", "score": float}, ...]
+
+        score 0~1 — cross-encoder relevance (sigmoid 적용).
         """
+        inputs = [f"{query} [SEP] {p}" for p in passages]
+
         def call() -> list[float]:
             resp = self._client.post(
                 _URL,
                 headers=self._headers,
-                json={
-                    "inputs": {
-                        "source_sentence": query,
-                        "sentences": passages,
-                    }
-                },
+                json={"inputs": inputs},
             )
             return _parse_response(resp, expected=len(passages))
 
@@ -166,20 +170,53 @@ def _truncate_passage(text: str) -> str:
 
 
 def _parse_response(resp: httpx.Response, *, expected: int) -> list[float]:
+    """W25 D14+1 D5 — text-classification 응답 파싱.
+
+    HF Inference API 의 text-classification pipeline 은 input 1건당:
+    - 단일 label: `[{"label": "LABEL_0", "score": 0.99}]`
+    - top_k>1: `[{"label": "LABEL_0", "score": 0.99}, {"label": "LABEL_1", "score": 0.01}]`
+
+    batch input N건 응답 형식 (관찰):
+    - flat list: `[{...}, {...}, ...]` (각 input 의 top-1 label 만)
+    - nested: `[[{...}], [{...}], ...]` (각 input 의 결과 list)
+
+    두 형식 모두 처리. score 만 추출 (label 무시 — single-class regression-like).
+    """
     resp.raise_for_status()
     data = resp.json()
-    if not isinstance(data, list) or len(data) != expected:
+    if not isinstance(data, list):
         raise RuntimeError(
-            f"reranker 응답 길이 불일치: got={type(data).__name__}"
-            f"({len(data) if isinstance(data, list) else '-'}), expect={expected}"
+            f"reranker 응답 형식 오류: {type(data).__name__}"
         )
+
+    # batch size 별 응답 형식 정규화:
+    # - 작은 batch (~< 10): flat list `[{label,score}, ...]` (len=N)
+    # - 큰 batch (>= 10 추정): nested `[[{...}, {...}, ...]]` (outer len=1, inner len=N)
+    # outer len 이 expected 와 다르고 inner list 가 expected 길이면 unwrap.
+    if len(data) != expected and len(data) == 1 and isinstance(data[0], list):
+        data = data[0]
+    if len(data) != expected:
+        raise RuntimeError(
+            f"reranker 응답 길이 불일치: got={len(data)}, expect={expected}"
+        )
+
     out: list[float] = []
-    for i, v in enumerate(data):
-        if not isinstance(v, (int, float)):
+    for i, item in enumerate(data):
+        # flat: dict — `{"label":..., "score":...}`
+        # 또는 inner list 1건 — `[{"label":..., "score":...}]`
+        if isinstance(item, dict):
+            score = item.get("score")
+        elif isinstance(item, list) and item and isinstance(item[0], dict):
+            score = item[0].get("score")
+        else:
             raise RuntimeError(
-                f"item[{i}] 타입 불일치: {type(v).__name__}"
+                f"item[{i}] 형식 오류: {type(item).__name__}"
             )
-        out.append(float(v))
+        if not isinstance(score, (int, float)):
+            raise RuntimeError(
+                f"item[{i}].score 타입 불일치: {type(score).__name__}"
+            )
+        out.append(float(score))
     return out
 
 

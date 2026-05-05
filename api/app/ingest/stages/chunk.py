@@ -32,6 +32,7 @@ W5 Day 3 추가 (4.6 표 청크 격리 — 청킹 정책 검토 §4.6):
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from app.adapters.parser import ExtractedSection, ExtractionResult
 from app.adapters.vectorstore import ChunkRecord
@@ -322,15 +323,27 @@ def _to_chunk_records(
             # 현재는 idx>0 에 일괄 표시 (디버깅 가시성 우선). 정확화는 split 단계에서
             # overlap 적용 여부를 ExtractedSection 메타에 전파 후 여기서 참조 권장.
             metadata["overlap_with_prev_chunk_idx"] = idx - 1
+        # W25 D14+1 D1 — 한국어 NFC 정규화 (인제스트단).
+        # query 측은 W25 D14 (commit 5eed8d4) 로 NFC 강제. chunks.text 도 NFC 강제로
+        # sparse path (PGroonga Mecab 형태소) 의 NFD 매칭 fail 회피.
+        # dense_vec (BGE-M3) 도 NFC 입력으로 인덱싱·검색 일관성 보장.
+        # idempotent — 이미 NFC 인 텍스트는 변화 없음 (PDF/DOCX/PPTX 등).
+        # 효과 큰 case: HWP/HWPX (한컴 파서가 NFD 로 추출하는 경향).
+        text_nfc = unicodedata.normalize("NFC", section.text)
+        title_nfc = (
+            unicodedata.normalize("NFC", section.section_title)
+            if section.section_title
+            else section.section_title
+        )
         records.append(
             ChunkRecord(
                 doc_id=doc_id,
                 chunk_idx=idx,
-                text=section.text,
+                text=text_nfc,
                 page=section.page,
-                section_title=section.section_title,
+                section_title=title_nfc,
                 bbox=section.bbox,
-                char_range=(0, len(section.text)),
+                char_range=(0, len(text_nfc)),
                 metadata=metadata,
                 # dense_vec=None, sparse_json={} — Day 5 에 채움
             )

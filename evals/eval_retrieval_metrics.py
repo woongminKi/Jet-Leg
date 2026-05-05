@@ -41,27 +41,52 @@ from app.services.retrieval_metrics import (  # noqa: E402
     recall_at_k,
 )
 
-_GOLDEN_CSV = Path(__file__).parent / "golden_v0.4_sonata.csv"
-_SONATA_DOC_ID_PREFIX = "3b901245"  # smoke 결과 확인된 적재 doc_id 첫 8자
+_GOLDEN_CSV_V04 = Path(__file__).parent / "golden_v0.4_sonata.csv"
+_GOLDEN_CSV_V05 = Path(__file__).parent / "golden_v0.5_auto.csv"
+_SONATA_DOC_ID_PREFIX = "3b901245"
 
 
 def _load_golden(csv_path: Path) -> list[dict]:
-    """golden_v0.4_sonata.csv 로드 → query / expected_chunk_idx_set 추출."""
+    """golden CSV 로드 — v0.4 (sonata, hints 만) 와 v0.5 (auto, doc_id + acceptable) 모두 지원.
+
+    schema auto-detect:
+    - v0.5: 컬럼 `doc_id` + `relevant_chunks` + `acceptable_chunks` (선택) 존재
+    - v0.4: 컬럼 `expected_chunk_idx_hints` 존재 (legacy)
+    """
     out: list[dict] = []
     with csv_path.open(encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            chunk_idx_hints = row.get("expected_chunk_idx_hints", "").strip()
-            if not chunk_idx_hints:
-                continue
-            relevant = {int(x.strip()) for x in chunk_idx_hints.split(",") if x.strip().isdigit()}
-            out.append({
-                "id": row["id"],
-                "query": row["query"].strip(),
-                "expected_pages": row.get("expected_pages", "").strip(),
-                "relevant_chunks": relevant,
-                "answer": row.get("answer", "").strip(),
-            })
+            # v0.5 schema 우선
+            if "doc_id" in row and row.get("doc_id"):
+                relv_str = (row.get("relevant_chunks") or "").strip()
+                accept_str = (row.get("acceptable_chunks") or "").strip()
+                relevant = {int(x.strip()) for x in relv_str.split(",") if x.strip().isdigit()}
+                acceptable = {int(x.strip()) for x in accept_str.split(",") if x.strip().isdigit()}
+                if not relevant:
+                    continue
+                out.append({
+                    "id": row["id"],
+                    "query": row["query"].strip(),
+                    "doc_id": row["doc_id"].strip(),
+                    "doc_title": (row.get("doc_title") or "").strip(),
+                    "relevant_chunks": relevant,
+                    "acceptable_chunks": acceptable,
+                })
+            else:
+                # v0.4 legacy
+                chunk_idx_hints = row.get("expected_chunk_idx_hints", "").strip()
+                if not chunk_idx_hints:
+                    continue
+                relevant = {int(x.strip()) for x in chunk_idx_hints.split(",") if x.strip().isdigit()}
+                out.append({
+                    "id": row["id"],
+                    "query": row["query"].strip(),
+                    "expected_pages": row.get("expected_pages", "").strip(),
+                    "relevant_chunks": relevant,
+                    "acceptable_chunks": set(),
+                    "answer": row.get("answer", "").strip(),
+                })
     return out
 
 
@@ -132,9 +157,10 @@ def _extract_predicted_chunk_idxs(search_response: dict, doc_id: str) -> list[in
 
 
 def _evaluate_one(query_record: dict, doc_id: str, k: int = 10) -> dict:
-    """단일 query → search (doc-scope) → chunk-level 메트릭."""
+    """단일 query → search (doc-scope) → chunk-level 메트릭 (graded relevance 지원)."""
     query = unicodedata.normalize("NFC", query_record["query"])
     relevant = query_record["relevant_chunks"]
+    acceptable = query_record.get("acceptable_chunks", set())
     t0 = time.monotonic()
     try:
         resp = _call_search(query, doc_id, limit=50)
@@ -151,12 +177,13 @@ def _evaluate_one(query_record: dict, doc_id: str, k: int = 10) -> dict:
         "id": query_record["id"],
         "query": query,
         "relevant_chunks": sorted(relevant),
+        "acceptable_chunks": sorted(acceptable),
         "predicted_top10": predicted[:k],
         "took_ms": took_ms,
         "reranker_used": resp.get("query_parsed", {}).get("reranker_used", False),
-        "recall_at_10": recall_at_k(predicted, relevant, k=k),
-        "mrr": mrr(predicted, relevant, k=k),
-        "ndcg_at_10": ndcg_at_k(predicted, relevant, k=k),
+        "recall_at_10": recall_at_k(predicted, relevant, k=k, acceptable_chunks=acceptable),
+        "mrr": mrr(predicted, relevant, k=k, acceptable_chunks=acceptable),
+        "ndcg_at_10": ndcg_at_k(predicted, relevant, k=k, acceptable_chunks=acceptable),
     }
 
 
@@ -216,19 +243,26 @@ def _evaluate_one_multi_doc(
         "doc_embedding_rrf_used": resp.get("query_parsed", {}).get("doc_embedding_rrf_used", False),
         "doc_embedding_hits": resp.get("query_parsed", {}).get("doc_embedding_hits", 0),
         "reranker_used": resp.get("query_parsed", {}).get("reranker_used", False),
-        # chunk-level (cap 3 chunks 한계)
-        "predicted_chunks_top3": chunk_idxs_in_response[:3],
-        "chunk_recall_top3": recall_at_k(chunk_idxs_in_response, relevant, k=3),
+        # chunk-level (cap 3 chunks 한계 — D1 정정: 명명을 정의에 맞게 수정).
+        # 응답의 matched_chunks 는 doc 당 cap 3 노출이라 분모 K 가 클수록 ceiling 0.75.
+        # 본 metric 은 "응답에 노출된 chunks 안에서의 recall" 을 의미.
+        "predicted_chunks_in_response": chunk_idxs_in_response[:3],
+        "chunk_recall_in_response": recall_at_k(chunk_idxs_in_response, relevant, k=3),
     }
 
 
 def _run_batch(
-    golden: list[dict], doc_id: str, k: int = 10, label: str = ""
+    golden: list[dict], doc_id: str | None, k: int = 10, label: str = ""
 ) -> tuple[list[dict], dict]:
+    """doc-scope chunk-level metrics. doc_id=None 시 query record 의 per-query doc_id 사용."""
     print(f"[{label}] {len(golden)}건 측정 시작...", file=sys.stderr)
     per_query = []
     for i, q in enumerate(golden, start=1):
-        res = _evaluate_one(q, doc_id, k=k)
+        target_doc = doc_id or q.get("doc_id")
+        if not target_doc:
+            print(f"  [{i}/{len(golden)}] {q['id']} doc_id 없음 — skip", file=sys.stderr)
+            continue
+        res = _evaluate_one(q, target_doc, k=k)
         per_query.append(res)
         if "error" in res:
             print(f"  [{i}/{len(golden)}] {res['id']} ERROR: {res['error']}", file=sys.stderr)
@@ -331,25 +365,43 @@ def main() -> int:
         help="JETRAG_DOC_EMBEDDING_RRF on/off 비교 — multi-doc 시나리오에서 효과 측정",
     )
     parser.add_argument("--k", type=int, default=10, help="top-K (default 10)")
+    parser.add_argument(
+        "--goldenset", type=str,
+        default=None,
+        help=f"골든셋 CSV 경로 (default v0.5 auto if exists, else v0.4 sonata)",
+    )
     args = parser.parse_args()
 
-    if not _GOLDEN_CSV.exists():
-        print(f"[ERROR] 골든셋 미발견: {_GOLDEN_CSV}", file=sys.stderr)
+    # golden CSV 결정 — args > v0.5 auto > v0.4 sonata
+    if args.goldenset:
+        golden_path = Path(args.goldenset)
+    elif _GOLDEN_CSV_V05.exists():
+        golden_path = _GOLDEN_CSV_V05
+    else:
+        golden_path = _GOLDEN_CSV_V04
+    if not golden_path.exists():
+        print(f"[ERROR] 골든셋 미발견: {golden_path}", file=sys.stderr)
         return 1
-    golden = _load_golden(_GOLDEN_CSV)
+    golden = _load_golden(golden_path)
     if not golden:
-        print(f"[ERROR] 골든셋 비어있음 또는 chunk_idx_hints 없음", file=sys.stderr)
+        print(f"[ERROR] 골든셋 비어있음", file=sys.stderr)
         return 1
+    print(f"[OK] 골든셋 로드: {golden_path.name} ({len(golden)}건)", file=sys.stderr)
 
-    doc_id = _resolve_sonata_doc_id()
-    if not doc_id:
-        print(
-            f"[ERROR] sonata catalog 적재 미발견 (prefix={_SONATA_DOC_ID_PREFIX}). "
-            f"먼저 sonata-the-edge_catalog.pdf 적재 필요.",
-            file=sys.stderr,
-        )
-        return 2
-    print(f"[OK] sonata doc_id 조회: {doc_id}", file=sys.stderr)
+    # doc_id 결정 — v0.5 는 query 마다 다름, v0.4 는 sonata 단일
+    is_v05 = bool(golden[0].get("doc_id"))
+    if is_v05:
+        doc_id = None  # per-query doc_id 사용
+        print(f"[OK] v0.5 형식 (per-query doc_id)", file=sys.stderr)
+    else:
+        doc_id = _resolve_sonata_doc_id()
+        if not doc_id:
+            print(
+                f"[ERROR] sonata catalog 미발견 (prefix={_SONATA_DOC_ID_PREFIX})",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"[OK] v0.4 sonata doc_id 조회: {doc_id}", file=sys.stderr)
 
     per_query_off: list[dict] | None = None
     agg_off: dict | None = None
@@ -361,10 +413,14 @@ def main() -> int:
 
     if args.compare_reranker:
         # ENV 토글 — 단일 process 에서 두 번 측정.
-        # search.py 가 매 요청 시 env 읽으므로 동적 토글 OK (provider 자체는 lru_cache 보존).
+        # D1 정정 — search.py 가 매 요청 시 env 읽지만 reranker LRU cache 가 OFF run 의 결과를
+        # 보존할 수 있어 ON run 시 cache hit 로 OFF 의 score 재사용 위험. cache_clear 강제.
+        from app.adapters.impl.bge_reranker_hf import get_reranker_provider
         os.environ["JETRAG_RERANKER_ENABLED"] = "false"
+        get_reranker_provider.cache_clear()
         per_query_off, agg_off = _run_batch(golden, doc_id, k=args.k, label="reranker OFF")
         os.environ["JETRAG_RERANKER_ENABLED"] = "true"
+        get_reranker_provider.cache_clear()
         per_query_on, agg_on = _run_batch(golden, doc_id, k=args.k, label="reranker ON")
     else:
         current = os.environ.get("JETRAG_RERANKER_ENABLED", "false").lower() == "true"
@@ -385,13 +441,17 @@ def main() -> int:
 
 
 def _run_multi_doc_batch(
-    golden: list[dict], expected_doc_id: str, k: int, label: str
+    golden: list[dict], expected_doc_id: str | None, k: int, label: str
 ) -> tuple[list[dict], dict]:
-    """multi-doc batch — doc_id 미지정 검색 + doc-level 메트릭."""
+    """multi-doc batch. expected_doc_id=None 시 query record 의 per-query doc_id 사용."""
     print(f"[{label}] {len(golden)}건 multi-doc 측정...", file=sys.stderr)
     per_query = []
     for i, q in enumerate(golden, start=1):
-        res = _evaluate_one_multi_doc(q, expected_doc_id, k=k)
+        target_doc = expected_doc_id or q.get("doc_id")
+        if not target_doc:
+            print(f"  [{i}/{len(golden)}] {q['id']} doc_id 없음 — skip", file=sys.stderr)
+            continue
+        res = _evaluate_one_multi_doc(q, target_doc, k=k)
         per_query.append(res)
         if "error" in res:
             print(f"  [{i}/{len(golden)}] {res['id']} ERROR: {res['error']}", file=sys.stderr)
@@ -411,7 +471,7 @@ def _run_multi_doc_batch(
         "top1": sum(1 for r in successful if r["doc_top1"]) / n,
         "top3": sum(1 for r in successful if r["doc_top3"]) / n,
         "doc_mrr": sum(r["doc_mrr"] for r in successful) / n,
-        "chunk_recall_top3": sum(r["chunk_recall_top3"] for r in successful) / n,
+        "chunk_recall_in_response": sum(r["chunk_recall_in_response"] for r in successful) / n,
         "n": n,
     }
     return per_query, agg
@@ -440,7 +500,7 @@ def _format_multi_doc_md(
             ("top1", "doc-level top-1 hit"),
             ("top3", "doc-level top-3 hit"),
             ("doc_mrr", "doc-level MRR"),
-            ("chunk_recall_top3", "chunk-level R@3 (cap 3 한계)"),
+            ("chunk_recall_in_response", "chunk-level recall (응답 cap 3 한계)"),
         ):
             v_off = agg_off[key] if agg_off else 0.0
             v_on = agg_on[key]
@@ -473,7 +533,7 @@ def _format_multi_doc_md(
             rank_s = str(r["doc_rank"]) if r["doc_rank"] else "—"
             lines.append(
                 f"| {r['id']} | `{r['query']}` | {rank_s} | {t1} | {t3} | "
-                f"{r['doc_mrr']:.3f} | {r['chunk_recall_top3']:.3f} | {r['took_ms']} |"
+                f"{r['doc_mrr']:.3f} | {r['chunk_recall_in_response']:.3f} | {r['took_ms']} |"
             )
         lines.append("")
     return "\n".join(lines)
@@ -481,11 +541,15 @@ def _format_multi_doc_md(
 
 def _run_multi_doc(golden: list[dict], doc_id: str, args) -> int:
     if args.compare_doc_embedding:
+        # D1 정정 — embedding LRU cache 가 OFF run 의 cosine 계산 결과 보존 가능. 안전하게 비움.
+        from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
         os.environ["JETRAG_DOC_EMBEDDING_RRF"] = "false"
+        get_bgem3_provider().clear_embed_cache()
         per_query_off, agg_off = _run_multi_doc_batch(
             golden, doc_id, args.k, "doc_embedding_rrf OFF"
         )
         os.environ["JETRAG_DOC_EMBEDDING_RRF"] = "true"
+        get_bgem3_provider().clear_embed_cache()
         per_query_on, agg_on = _run_multi_doc_batch(
             golden, doc_id, args.k, "doc_embedding_rrf ON"
         )

@@ -93,24 +93,35 @@ class RerankBodyAndResponseTest(unittest.TestCase):
         post = MagicMock(return_value=resp)
         return post
 
-    def test_body_uses_sentence_similarity_schema(self) -> None:
-        """request body 가 sentence-similarity pipeline schema 인지 검증."""
+    def test_body_uses_text_classification_sep_schema(self) -> None:
+        """W25 D14+1 D5 — text-classification + [SEP] schema 검증.
+
+        body inputs = ["query [SEP] passage1", "query [SEP] passage2", ...]
+        response = [{"label":..., "score": float}, ...]
+        """
         from app.adapters.impl.bge_reranker_hf import get_reranker_provider
 
         provider = get_reranker_provider()
-        post_mock = self._mock_post([0.9, 0.5, 0.1])
+        # text-classification 응답 형식 — list of dict (flat) 또는 list of list
+        post_mock = self._mock_post([
+            {"label": "LABEL_0", "score": 0.9},
+            {"label": "LABEL_0", "score": 0.5},
+            {"label": "LABEL_0", "score": 0.1},
+        ])
         provider._client.post = post_mock
 
         candidates = [("c1", "텍스트 A"), ("c2", "텍스트 B"), ("c3", "텍스트 C")]
         scores = provider.rerank("질문", candidates)
 
         self.assertEqual(scores, [0.9, 0.5, 0.1])
-        # 호출된 body 검증
+        # 호출된 body 검증 — list of [SEP] strings
         post_mock.assert_called_once()
         body = post_mock.call_args.kwargs["json"]
         self.assertIn("inputs", body)
-        self.assertEqual(body["inputs"]["source_sentence"], "질문")
-        self.assertEqual(body["inputs"]["sentences"], ["텍스트 A", "텍스트 B", "텍스트 C"])
+        self.assertEqual(
+            body["inputs"],
+            ["질문 [SEP] 텍스트 A", "질문 [SEP] 텍스트 B", "질문 [SEP] 텍스트 C"],
+        )
 
     def test_empty_candidates_returns_empty_no_api_call(self) -> None:
         from app.adapters.impl.bge_reranker_hf import get_reranker_provider
@@ -126,7 +137,10 @@ class RerankBodyAndResponseTest(unittest.TestCase):
         provider = get_reranker_provider()
         provider.clear_cache()
 
-        post_mock = self._mock_post([0.7, 0.3])
+        post_mock = self._mock_post([
+            {"label": "LABEL_0", "score": 0.7},
+            {"label": "LABEL_0", "score": 0.3},
+        ])
         provider._client.post = post_mock
 
         candidates = [("c1", "A"), ("c2", "B")]
@@ -146,27 +160,30 @@ class RerankBodyAndResponseTest(unittest.TestCase):
         provider.clear_cache()
 
         # 1차 호출 — c1, c2 cache 화
-        post1 = self._mock_post([0.7, 0.3])
+        post1 = self._mock_post([
+            {"label": "LABEL_0", "score": 0.7},
+            {"label": "LABEL_0", "score": 0.3},
+        ])
         provider._client.post = post1
         provider.rerank("질문", [("c1", "A"), ("c2", "B")])
 
         # 2차 — c1 (cache) + c3 (miss) → c3 만 HF 호출
-        post2 = self._mock_post([0.5])  # c3 score
+        post2 = self._mock_post([{"label": "LABEL_0", "score": 0.5}])
         provider._client.post = post2
         scores = provider.rerank("질문", [("c1", "A"), ("c3", "C")])
 
         self.assertEqual(scores[0], 0.7)  # cache hit
         self.assertEqual(scores[1], 0.5)  # miss → HF 호출 결과
         post2.assert_called_once()
-        # body 의 sentences 는 miss 만 (c3) 포함
+        # body 의 inputs 는 miss 만 (c3) 포함
         body = post2.call_args.kwargs["json"]
-        self.assertEqual(body["inputs"]["sentences"], ["C"])
+        self.assertEqual(body["inputs"], ["질문 [SEP] C"])
 
     def test_response_length_mismatch_raises(self) -> None:
         from app.adapters.impl.bge_reranker_hf import get_reranker_provider
         provider = get_reranker_provider()
         provider.clear_cache()
-        post_mock = self._mock_post([0.5])  # 1개만 — 2개 기대인데
+        post_mock = self._mock_post([{"label": "LABEL_0", "score": 0.5}])  # 1개만
         provider._client.post = post_mock
         with self.assertRaises(RuntimeError):
             provider.rerank("질문", [("c1", "A"), ("c2", "B")])
@@ -179,13 +196,17 @@ class RerankBodyAndResponseTest(unittest.TestCase):
         )
         provider = get_reranker_provider()
         provider.clear_cache()
-        post_mock = self._mock_post([0.5])
+        post_mock = self._mock_post([{"label": "LABEL_0", "score": 0.5}])
         provider._client.post = post_mock
 
         long_text = "가" * (_MAX_PASSAGE_CHARS + 500)
         provider.rerank("질문", [("c1", long_text)])
         body = post_mock.call_args.kwargs["json"]
-        self.assertEqual(len(body["inputs"]["sentences"][0]), _MAX_PASSAGE_CHARS)
+        # body inputs[0] = "질문 [SEP] {truncated_passage}"
+        # passage 부분은 _MAX_PASSAGE_CHARS 자
+        self.assertIn(" [SEP] ", body["inputs"][0])
+        passage_part = body["inputs"][0].split(" [SEP] ", 1)[1]
+        self.assertEqual(len(passage_part), _MAX_PASSAGE_CHARS)
 
 
 class SearchRerankerIntegrationTest(unittest.TestCase):

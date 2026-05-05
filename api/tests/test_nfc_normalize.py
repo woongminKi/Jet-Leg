@@ -76,5 +76,73 @@ class IngestTitleNormalizationTest(unittest.TestCase):
         )
 
 
+class ChunkNfcNormalizationTest(unittest.TestCase):
+    """W25 D14+1 D1 — chunks.text 인제스트단 NFC 정규화."""
+
+    def test_chunk_records_normalize_text_to_nfc(self) -> None:
+        """`_to_chunk_records` 가 NFD section.text 를 NFC 로 변환해야 한다."""
+        from app.adapters.parser import ExtractedSection
+        from app.ingest.stages.chunk import _to_chunk_records
+
+        nfd_text = unicodedata.normalize("NFD", "한마음생활체육관 휴관일")
+        nfd_title = unicodedata.normalize("NFD", "체육관 운영 내규")
+        section = ExtractedSection(
+            text=nfd_text,
+            page=1,
+            section_title=nfd_title,
+            bbox=None,
+        )
+        records = _to_chunk_records(doc_id="test-doc", sections=[section])
+        self.assertEqual(len(records), 1)
+        # text + section_title 모두 NFC
+        self.assertEqual(
+            records[0].text,
+            unicodedata.normalize("NFC", "한마음생활체육관 휴관일"),
+        )
+        self.assertEqual(
+            records[0].section_title,
+            unicodedata.normalize("NFC", "체육관 운영 내규"),
+        )
+
+    def test_chunk_records_idempotent_on_already_nfc(self) -> None:
+        """NFC 입력은 변경 없음 (PDF / DOCX 등 영향 없음 보장)."""
+        from app.adapters.parser import ExtractedSection
+        from app.ingest.stages.chunk import _to_chunk_records
+
+        nfc_text = "이미 NFC 인 한국어 텍스트"
+        section = ExtractedSection(
+            text=nfc_text, page=1, section_title=None, bbox=None
+        )
+        records = _to_chunk_records(doc_id="test", sections=[section])
+        self.assertEqual(records[0].text, nfc_text)
+
+
+class DocEmbedNfcNormalizationTest(unittest.TestCase):
+    """`doc_embed._pick_source` 가 임베딩 입력을 NFC 로 통일."""
+
+    def test_summary_normalized(self) -> None:
+        from app.ingest.stages.doc_embed import _pick_source
+
+        nfd_summary = unicodedata.normalize("NFD", "한국어 요약")
+        result = _pick_source(
+            summary=nfd_summary, implications=None, raw_text=""
+        )
+        self.assertEqual(result, unicodedata.normalize("NFC", "한국어 요약"))
+
+    def test_raw_text_fallback_normalized(self) -> None:
+        from app.ingest.stages.doc_embed import _pick_source
+
+        nfd_raw = unicodedata.normalize("NFD", "한국어 본문 fallback")
+        result = _pick_source(summary=None, implications=None, raw_text=nfd_raw)
+        self.assertEqual(
+            result, unicodedata.normalize("NFC", "한국어 본문 fallback")
+        )
+
+    def test_returns_none_when_all_empty(self) -> None:
+        from app.ingest.stages.doc_embed import _pick_source
+
+        self.assertIsNone(_pick_source(summary=None, implications=None, raw_text=""))
+
+
 if __name__ == "__main__":
     unittest.main()
