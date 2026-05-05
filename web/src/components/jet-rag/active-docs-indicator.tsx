@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { formatRemainingMs } from '@/lib/format';
+import { formatRemainingMs, formatStageProgress } from '@/lib/format';
 import { STAGE_LABELS } from '@/lib/stages';
 import { useActiveDocsRealtime } from '@/lib/hooks/use-active-docs-realtime';
 import { notifyDocTerminal } from '@/lib/notifications/notify-doc';
@@ -81,6 +81,10 @@ export function ActiveDocsIndicator() {
                 : item.job.status === 'queued'
                   ? '대기 중'
                   : '시작 전';
+              const subProgress = formatStageProgress(item.job.stage_progress);
+              const fullStageLabel = subProgress
+                ? `${stageLabel} (${subProgress})`
+                : stageLabel;
               const eta = formatRemainingMs(item.job.estimated_remaining_ms);
               return (
                 <li key={item.doc_id}>
@@ -98,7 +102,7 @@ export function ActiveDocsIndicator() {
                           className="h-3 w-3 animate-spin text-primary"
                           aria-hidden
                         />
-                        <span>현재: {stageLabel}</span>
+                        <span>현재: {fullStageLabel}</span>
                       </span>
                       {eta && <span>{eta}</span>}
                     </span>

@@ -32,7 +32,12 @@ from app.adapters.impl.url_parser import UrlParser
 from app.adapters.parser import DocumentParser, ExtractedSection, ExtractionResult
 from app.config import get_settings
 from app.db import get_supabase_client
-from app.ingest.jobs import skip_stage, stage
+from app.ingest.jobs import (
+    clear_stage_progress,
+    skip_stage,
+    stage,
+    update_stage_progress,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +158,7 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
                 base_result=result,
                 file_name=file_name,
                 image_parser=_image_parser,
+                job_id=job_id,
             )
 
     return result
@@ -277,6 +283,7 @@ def _enrich_pdf_with_vision(
     base_result: ExtractionResult,
     file_name: str,
     image_parser: ImageParser,
+    job_id: str | None = None,
 ) -> ExtractionResult:
     """W25 D14 — 일반 PDF 의 표/그림/다이어그램 정보를 vision 으로 보강.
 
@@ -323,6 +330,13 @@ def _enrich_pdf_with_vision(
             warnings.append(msg)
             logger.warning("%s (file=%s)", msg, file_name)
 
+        # W25 D14 — 페이지 단위 진행 표시 (job_id 있을 때만, indicator 실시간 업데이트).
+        completed_pages: set[int] = set()
+        if job_id:
+            update_stage_progress(
+                job_id, current=0, total=process_count, unit="pages",
+            )
+
         # W25 D14 Sprint 4 — sweep 로직: 503 random 실패 페이지 자동 재시도.
         pending_pages: list[int] = list(range(process_count))
         for sweep_idx in range(1, _VISION_ENRICH_MAX_SWEEPS + 1):
@@ -365,6 +379,14 @@ def _enrich_pdf_with_vision(
                     if page_result.raw_text:
                         raw_parts.append(page_result.raw_text)
                     warnings.extend(page_result.warnings)
+                    completed_pages.add(page_num)
+                    if job_id:
+                        update_stage_progress(
+                            job_id,
+                            current=len(completed_pages),
+                            total=process_count,
+                            unit="pages",
+                        )
                 except Exception as exc:  # noqa: BLE001 — 페이지 단위 부분 실패 허용
                     failed_in_sweep.append(page_num)
                     if sweep_idx == _VISION_ENRICH_MAX_SWEEPS:
@@ -389,6 +411,8 @@ def _enrich_pdf_with_vision(
             logger.error("%s (file=%s)", msg, file_name)
     finally:
         doc.close()
+        if job_id:
+            clear_stage_progress(job_id)
 
     return ExtractionResult(
         source_type=base_result.source_type,  # 'pdf' 보존

@@ -1,6 +1,7 @@
 from .jobs import (
     IngestJob,
     begin_stage,
+    clear_stage_progress,
     create_job,
     end_stage,
     fail_job,
@@ -11,6 +12,7 @@ from .jobs import (
     stage,
     start_job,
     update_stage,
+    update_stage_progress,
 )
 from .pipeline import run_pipeline
 from .upload import run_full_ingest
@@ -18,6 +20,7 @@ from .upload import run_full_ingest
 __all__ = [
     "IngestJob",
     "begin_stage",
+    "clear_stage_progress",
     "create_job",
     "end_stage",
     "fail_job",
@@ -30,4 +33,5 @@ __all__ = [
     "stage",
     "start_job",
     "update_stage",
+    "update_stage_progress",
 ]

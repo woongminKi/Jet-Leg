@@ -1,7 +1,7 @@
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { JobStatusValue, StageValue } from '@/lib/api';
-import { formatRemainingMs } from '@/lib/format';
+import type { JobStatusValue, StageProgressDetail, StageValue } from '@/lib/api';
+import { formatRemainingMs, formatStageProgress } from '@/lib/format';
 import { STAGE_LABELS, STAGE_ORDER } from '@/lib/stages';
 
 interface StageProgressProps {
@@ -10,12 +10,15 @@ interface StageProgressProps {
   /** W25 D14 Sprint B — ingest_logs median + fallback 으로 추정한 남은 시간(ms).
    *  queued/running 시만 값. null 이면 ETA 미노출 (백엔드 미기동 환경 graceful). */
   estimatedRemainingMs?: number | null;
+  /** W25 D14 — stage 안 sub-step 진행 (예: vision_enrich 페이지 12/41). */
+  stageProgress?: StageProgressDetail | null;
 }
 
 export function StageProgress({
   currentStage,
   status,
   estimatedRemainingMs,
+  stageProgress,
 }: StageProgressProps) {
   const isDone = status === 'completed';
   const isFailed = status === 'failed';
@@ -26,6 +29,9 @@ export function StageProgress({
   // W25 D14 Sprint B — ETA 표시 (running/queued 만, completed/failed 시 null).
   const remainingLabel =
     !isDone && !isFailed ? formatRemainingMs(estimatedRemainingMs) : null;
+  // W25 D14 — stage 내 sub-step (예: "12/41 페이지").
+  const subProgressLabel =
+    !isDone && !isFailed ? formatStageProgress(stageProgress) : null;
 
   return (
     <div className="space-y-2">
@@ -63,7 +69,7 @@ export function StageProgress({
               : isFailed
                 ? `실패 단계: ${currentStage ? STAGE_LABELS[currentStage] : '시작 전'}`
                 : inProgressStage
-                  ? `현재: ${STAGE_LABELS[inProgressStage]}`
+                  ? `현재: ${STAGE_LABELS[inProgressStage]}${subProgressLabel ? ` (${subProgressLabel})` : ''}`
                   : status === 'queued'
                     ? '대기 중'
                     : '시작 전'}

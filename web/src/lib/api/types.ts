@@ -193,6 +193,12 @@ export interface ReingestResponse {
   chunks_deleted: number;
 }
 
+export interface StageProgressDetail {
+  current: number;
+  total: number;
+  unit: string; // 'pages' | 'chunks' | ...
+}
+
 export interface JobStatus {
   job_id: string;
   status: JobStatusValue;
@@ -205,6 +211,9 @@ export interface JobStatus {
   /** W25 D14 Sprint B — 대략적 남은 시간(ms). queued/running 시만 추정값,
    *  나머지는 null. ingest_logs.duration_ms median (5분 cache) + fallback. */
   estimated_remaining_ms?: number | null;
+  /** W25 D14 — stage 안 sub-step 진행 (예: vision_enrich 페이지 12/41).
+   *  null 시 stage 라벨만 표시. */
+  stage_progress?: StageProgressDetail | null;
 }
 
 export interface DocumentStatusResponse {

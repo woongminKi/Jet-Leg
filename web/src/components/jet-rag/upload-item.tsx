@@ -150,6 +150,7 @@ export function UploadItem({
                 currentStage={job?.current_stage ?? null}
                 status={(job?.status ?? 'queued') as never}
                 estimatedRemainingMs={job?.estimated_remaining_ms ?? null}
+                stageProgress={job?.stage_progress ?? null}
               />
               {/* W25 D14 Sprint A — timedOut 시 fixed 메시지, 그 외 진행 중에는 90초마다 회전 안내문. */}
               {timedOut ? (

@@ -85,6 +85,9 @@ class JobStatus(BaseModel):
     # (5분 TTL cache + fallback hardcoded). 첫 ingest 시 정확도 낮음 — 사용자 표시
     # 시 "약 N분 N초 남음" 보수적 표기 권장.
     estimated_remaining_ms: int | None = None
+    # W25 D14 — stage 안 sub-step 진행 (예: vision_enrich 페이지 12/41).
+    # {current, total, unit} 형식. NULL 시 stage 라벨만 표시.
+    stage_progress: dict | None = None
 
 
 class DocumentStatusResponse(BaseModel):
@@ -835,7 +838,7 @@ def list_active_documents(
         supabase.table("ingest_jobs")
         .select(
             "id, doc_id, status, current_stage, attempts, error_msg, "
-            "queued_at, started_at, finished_at"
+            "queued_at, started_at, finished_at, stage_progress"
         )
         .in_("status", list(_ACTIVE_DOC_STATUSES))
         .gte("queued_at", cutoff)
@@ -886,6 +889,7 @@ def list_active_documents(
                         job_status=row["status"],
                         current_stage=row.get("current_stage"),
                     ),
+                    stage_progress=row.get("stage_progress"),
                 ),
             )
         )
@@ -921,7 +925,7 @@ def batch_status(
         supabase.table("ingest_jobs")
         .select(
             "id, doc_id, status, current_stage, attempts, error_msg, "
-            "queued_at, started_at, finished_at"
+            "queued_at, started_at, finished_at, stage_progress"
         )
         .in_("doc_id", doc_ids)
         .order("queued_at", desc=True)
@@ -959,6 +963,7 @@ def batch_status(
                         job_status=row["status"],
                         current_stage=row.get("current_stage"),
                     ),
+                    stage_progress=row.get("stage_progress"),
                 ),
             )
         )

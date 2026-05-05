@@ -80,6 +80,54 @@ def update_stage(job_id: str, *, stage: str) -> None:
     )
 
 
+def update_stage_progress(
+    job_id: str,
+    *,
+    current: int,
+    total: int,
+    unit: str = "pages",
+) -> None:
+    """W25 D14 — stage 안 sub-step 진행 update (vision_enrich 페이지 단위 등).
+
+    {current, total, unit} JSONB 로 ingest_jobs.stage_progress 에 저장.
+    Realtime publication 가 자동으로 web 에 push → StageProgress + indicator 실시간 갱신.
+
+    실패 시 graceful skip (마이그레이션 010 미적용 환경 대응) — 임베딩 파이프라인 무영향.
+    """
+    try:
+        client = get_supabase_client()
+        (
+            client.table(_TABLE_JOBS)
+            .update(
+                {
+                    "stage_progress": {
+                        "current": int(current),
+                        "total": int(total),
+                        "unit": unit,
+                    }
+                }
+            )
+            .eq("id", job_id)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — 진행 표시는 best-effort
+        logger.debug("stage_progress update skip (graceful): %s", exc)
+
+
+def clear_stage_progress(job_id: str) -> None:
+    """stage 종료 시 stage_progress 를 NULL 로 리셋 (다음 stage 가 sub-progress 안 쓸 수 있음)."""
+    try:
+        client = get_supabase_client()
+        (
+            client.table(_TABLE_JOBS)
+            .update({"stage_progress": None})
+            .eq("id", job_id)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("clear_stage_progress skip (graceful): %s", exc)
+
+
 def finish_job(job_id: str) -> None:
     client = get_supabase_client()
     (

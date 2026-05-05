@@ -34,6 +34,24 @@ export function formatBytes(n: number): string {
   return `${formatted} ${SIZE_UNITS[i]}`;
 }
 
+/** W25 D14 — stage 내 sub-step 진행 한국어 표기 (예: "12/41 페이지").
+ *  unit 별 한국어 매핑. null/total≤0 → null. */
+const STAGE_PROGRESS_UNIT_KO: Record<string, string> = {
+  pages: '페이지',
+  chunks: '청크',
+  files: '파일',
+};
+
+export function formatStageProgress(
+  detail: { current: number; total: number; unit: string } | null | undefined,
+): string | null {
+  if (!detail) return null;
+  if (!Number.isFinite(detail.current) || !Number.isFinite(detail.total)) return null;
+  if (detail.total <= 0) return null;
+  const unitKo = STAGE_PROGRESS_UNIT_KO[detail.unit] ?? detail.unit;
+  return `${detail.current}/${detail.total} ${unitKo}`;
+}
+
 /** W25 D14 Sprint B — ETA 표시용 한국어 자연어 포맷.
  *  - < 10s : "약 10초 남음" (보수적 round-up)
  *  - < 60s : "약 N초 남음"
