@@ -196,6 +196,14 @@ def evaluate_context_precision_only(
             embeddings=judge_emb,
         )
         scores = result.scores[0] if result.scores else {}
+        # W25 D14 — Gemini judge false negative 디버그용 raw 점수 로그
+        logger.info(
+            "context_precision raw scores: %s (query=%r, n_contexts=%d, ctx_first=%r)",
+            dict(scores),
+            query,
+            len(contexts),
+            (contexts[0] if contexts else "")[:80],
+        )
         metrics = RagasMetrics(
             context_precision=_safe_float(
                 scores.get("llm_context_precision_without_reference")
