@@ -1,25 +1,8 @@
-import { getActiveDocs, type ActiveDocsResponse } from '@/lib/api';
 import { IngestUI } from '@/components/jet-rag/ingest-ui';
-import type { UploadItemData } from '@/components/jet-rag/upload-item';
 
-/** W25 D14 Sprint 0 — RSC 첫 fetch 로 진행 중·실패 doc 자동 표시.
- *  새로고침 후에도 처리 현황 카드가 살아있도록, GET /documents/active 결과를
- *  UploadItemData placeholder 로 변환해 IngestUI 에 hydrate. 백엔드 미기동 시
- *  graceful — items=[] 빈 리스트로 떨어뜨리고 기존 빈 상태 안내문 노출. */
-export default async function IngestPage() {
-  const active = await getActiveDocs(24).catch<ActiveDocsResponse | null>(
-    () => null,
-  );
-  const initialItems: UploadItemData[] = (active?.items ?? []).map((d) => ({
-    localId: `restored-${d.doc_id}`,
-    fileName: d.file_name,
-    sizeBytes: d.size_bytes,
-    docId: d.doc_id,
-    jobId: d.job.job_id,
-    duplicated: false,
-    retryNonce: 0,
-  }));
-
+/** W25 D14 — 처리 현황과 헤더 indicator 가 같은 데이터 source (useActiveDocsRealtime) 사용.
+ *  page.tsx 는 단순 layout 만, IngestUI 가 client 에서 active doc 자동 동기. */
+export default function IngestPage() {
   return (
     <main className="container mx-auto flex-1 px-4 py-8 md:px-6 md:py-12">
       <div className="mx-auto max-w-3xl space-y-6">
@@ -32,7 +15,7 @@ export default async function IngestPage() {
           </p>
         </header>
 
-        <IngestUI initialItems={initialItems} />
+        <IngestUI />
       </div>
     </main>
   );

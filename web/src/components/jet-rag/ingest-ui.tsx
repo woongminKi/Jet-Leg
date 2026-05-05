@@ -1,26 +1,59 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ApiError, uploadDocument } from '@/lib/api';
+import { ApiError, uploadDocument, type ActiveDocItem } from '@/lib/api';
+import { useActiveDocsRealtime } from '@/lib/hooks/use-active-docs-realtime';
 import { emitDocUploaded } from '@/lib/notifications/upload-event';
+import { notifyDocTerminal } from '@/lib/notifications/notify-doc';
 import { DropZone } from '@/components/jet-rag/drop-zone';
 import { UploadList } from '@/components/jet-rag/upload-list';
 import type { UploadItemData } from '@/components/jet-rag/upload-item';
 
-interface IngestUIProps {
-  /** W25 D14 Sprint 0 — 새로고침 후에도 진행 중·실패 doc 자동 표시.
-   *  page.tsx (RSC) 가 GET /documents/active 결과를 placeholder 형태로 변환해 hydrate. */
-  initialItems: UploadItemData[];
+function activeDocToUploadItem(active: ActiveDocItem): UploadItemData {
+  return {
+    localId: `active-${active.doc_id}`,
+    fileName: active.file_name,
+    sizeBytes: active.size_bytes,
+    docId: active.doc_id,
+    jobId: active.job.job_id,
+    duplicated: false,
+    retryNonce: 0,
+  };
 }
 
-export function IngestUI({ initialItems }: IngestUIProps) {
+export function IngestUI() {
   const router = useRouter();
-  const [items, setItems] = useState<UploadItemData[]>(initialItems);
 
-  // W2 §3.M / DE-28 — 자동 이동 정책: "단일=자동, 다중=첫 완료만 자동".
-  // restored item 이 있으면 이미 background 진행 중이므로 자동 라우팅을 막아 사용자 의도 보존.
-  const autoRoutedRef = useRef(initialItems.length > 0);
+  // 진행 중 업로드 placeholder (docId 없는 동안 또는 uploadError/duplicated 표시 용)
+  const [transientItems, setTransientItems] = useState<UploadItemData[]>([]);
+
+  // 헤더 indicator 와 동일 source — Supabase Realtime 으로 자동 동기.
+  // terminal 시 자동으로 active 에서 빠지고 toast 알림 (notifyDocTerminal).
+  const { items: activeItems } = useActiveDocsRealtime((item, terminalStatus) => {
+    notifyDocTerminal(item, terminalStatus);
+  });
+
+  // 자동 이동 정책 — 단일=자동, 다중=첫 완료만 자동 (W2 §3.M / DE-28)
+  // active 가 이미 있으면 백그라운드 진행 중이므로 자동 이동 막아 사용자 의도 보존
+  const autoRoutedRef = useRef(activeItems.length > 0);
+
+  // active 와 transient 합치기 — transient placeholder 가 active 에 들어왔으면 active 우선
+  const mergedItems: UploadItemData[] = useMemo(() => {
+    const activeByDocId = new Map<string, ActiveDocItem>();
+    for (const a of activeItems) activeByDocId.set(a.doc_id, a);
+
+    // transient 중 active 에 들어온 docId 는 제거 (active 가 fresher data + Realtime 갱신)
+    const stillTransient = transientItems.filter((t) => {
+      if (t.uploadError) return true; // 업로드 실패 placeholder 는 사용자가 dismiss 까지 유지
+      if (t.duplicated) return true; // duplicated 도 표시 유지 (즉시 router.push 직전 1회)
+      if (!t.docId) return true; // 아직 POST 응답 못 받음
+      return !activeByDocId.has(t.docId); // active 안 들어왔으면 placeholder 유지
+    });
+
+    const fromActive = activeItems.map(activeDocToUploadItem);
+    return [...stillTransient, ...fromActive];
+  }, [activeItems, transientItems]);
 
   const handleFiles = async (files: File[]) => {
     const placeholders: UploadItemData[] = files.map((file) => ({
@@ -32,14 +65,14 @@ export function IngestUI({ initialItems }: IngestUIProps) {
       duplicated: false,
       retryNonce: 0,
     }));
-    setItems((prev) => [...placeholders, ...prev]);
+    setTransientItems((prev) => [...placeholders, ...prev]);
 
     await Promise.all(
       placeholders.map(async (placeholder, idx) => {
         const file = files[idx];
         try {
           const res = await uploadDocument(file, 'drag-drop');
-          setItems((prev) =>
+          setTransientItems((prev) =>
             prev.map((it) =>
               it.localId === placeholder.localId
                 ? {
@@ -51,7 +84,6 @@ export function IngestUI({ initialItems }: IngestUIProps) {
                 : it,
             ),
           );
-          // W25 D14 — 헤더 indicator 즉시 갱신 (Realtime INSERT event 도착 대기 없이)
           if (!res.duplicated) {
             emitDocUploaded({ docId: res.doc_id });
           }
@@ -62,7 +94,7 @@ export function IngestUI({ initialItems }: IngestUIProps) {
         } catch (err) {
           const message =
             err instanceof ApiError ? err.detail : '알 수 없는 오류가 발생했습니다.';
-          setItems((prev) =>
+          setTransientItems((prev) =>
             prev.map((it) =>
               it.localId === placeholder.localId
                 ? { ...it, uploadError: message }
@@ -75,7 +107,7 @@ export function IngestUI({ initialItems }: IngestUIProps) {
   };
 
   const handleReingest = (localId: string, jobId: string) => {
-    setItems((prev) =>
+    setTransientItems((prev) =>
       prev.map((it) =>
         it.localId === localId
           ? { ...it, jobId, retryNonce: it.retryNonce + 1 }
@@ -96,7 +128,7 @@ export function IngestUI({ initialItems }: IngestUIProps) {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-foreground">처리 현황</h2>
         <UploadList
-          items={items}
+          items={mergedItems}
           onReingest={handleReingest}
           onCompleted={handleCompleted}
         />
