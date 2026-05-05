@@ -3,7 +3,7 @@
 # W25 D7 — Ragas mini-Ragas (Phase 1) 도입과 함께 신규 작성. DoD ③ "make eval".
 # 기존 검증 도구 (golden_batch_smoke.py / monitor_search_slo.py) 도 같은 entry-point 로 묶음.
 
-.PHONY: help eval eval-auto golden slo
+.PHONY: help eval eval-auto eval-retrieval golden slo
 
 help:
 	@echo "Jet-Rag — 평가 / KPI 측정 entry-point"
@@ -21,6 +21,11 @@ help:
 	@echo ""
 	@echo "  make golden   - golden batch (20건) top-1/top-3 hit 율 회귀 측정"
 	@echo "                  · 결과: stdout markdown"
+	@echo ""
+	@echo "  make eval-retrieval [COMPARE=1]"
+	@echo "                  - Recall@10 / MRR / nDCG@10 측정 (chunk-level, sonata 10건)"
+	@echo "                  · COMPARE=1 시 reranker on/off 비교"
+	@echo "                  · 결과: work-log/<오늘> retrieval-metrics.md"
 	@echo ""
 	@echo "  make slo      - search SLO 모니터링 (latency / cache_hit / mode 분포)"
 	@echo "                  · 결과: stdout markdown"
@@ -47,6 +52,19 @@ eval-auto:
 	cd api && uv run python ../evals/run_ragas_auto.py --doc_id "$(DOC)" --testset_size $(SIZE) --output "../$(EVAL_AUTO_OUTPUT)"
 	@echo "[eval-auto] 완료 — '$(EVAL_AUTO_OUTPUT)' 확인"
 	@echo "[eval] 완료 — '$(EVAL_OUTPUT)' 확인"
+
+# W25 D14+1 (E) — 검색 retrieval 메트릭 (chunk-level Recall@10 / MRR / nDCG@10).
+# `evals/golden_v0.4_sonata.csv` (sonata catalog, 10 QA + chunk_idx hints) 활용.
+# COMPARE=1 시 단일 process 에서 reranker on/off 둘 다 측정 → 비교 표.
+COMPARE ?=
+RETRIEVAL_OUTPUT := work-log/$(EVAL_DATE) retrieval-metrics.md
+eval-retrieval:
+	@echo "[eval-retrieval] Recall@10 / MRR / nDCG@10 측정 시작..."
+	@echo "[eval-retrieval] (sonata catalog 적재 + .env SUPABASE_*+HF_API_TOKEN 필요)"
+	cd api && uv run python ../evals/eval_retrieval_metrics.py \
+		$(if $(COMPARE),--compare-reranker,) \
+		--output "../$(RETRIEVAL_OUTPUT)"
+	@echo "[eval-retrieval] 완료 — '$(RETRIEVAL_OUTPUT)' 확인"
 
 # 기존 회귀 보호 도구 — golden batch (Ragas 도입 전부터 ship) 호환 entry-point.
 golden:
