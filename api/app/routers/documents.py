@@ -187,6 +187,40 @@ _ACTIVE_DOC_MAX_HOURS = 168  # 7일
 _ACTIVE_DOC_STATUSES = ("queued", "running", "failed")
 
 
+# W25 D14 — stage_progress 컬럼 (마이그레이션 010) 미적용 환경에서 SELECT 가
+# APIError 42703 ("column does not exist") 으로 실패할 때, 첫 1회만 시도 후
+# 컬럼 빼고 재시도. 이후 호출은 자동으로 컬럼 미포함 → 매 요청 500 폭주 회피.
+# 마이그레이션 적용 후 백엔드 재시작 시 자동 회복.
+_INGEST_JOBS_BASE_COLUMNS = (
+    "id, doc_id, status, current_stage, attempts, error_msg, "
+    "queued_at, started_at, finished_at"
+)
+_stage_progress_select_enabled = True
+
+
+def _ingest_jobs_select_columns() -> str:
+    if _stage_progress_select_enabled:
+        return _INGEST_JOBS_BASE_COLUMNS + ", stage_progress"
+    return _INGEST_JOBS_BASE_COLUMNS
+
+
+def _disable_stage_progress_select(reason: Exception) -> None:
+    global _stage_progress_select_enabled
+    if _stage_progress_select_enabled:
+        _stage_progress_select_enabled = False
+        logger.warning(
+            "ingest_jobs.stage_progress SELECT 첫 실패 — 이후 컬럼 미포함 "
+            "(마이그레이션 010 적용 후 백엔드 재시작 시 회복): %s",
+            reason,
+        )
+
+
+def reset_stage_progress_select_enabled() -> None:
+    """단위 테스트 용 — 모듈 flag 리셋."""
+    global _stage_progress_select_enabled
+    _stage_progress_select_enabled = True
+
+
 class DocumentDetailResponse(BaseModel):
     """`/doc/[id]` 경량판 (W2 §3.M, F′-α2) 의 단건 종합 응답.
 
@@ -834,17 +868,24 @@ def list_active_documents(
     supabase = get_supabase_client()
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
-    jobs_resp = (
-        supabase.table("ingest_jobs")
-        .select(
-            "id, doc_id, status, current_stage, attempts, error_msg, "
-            "queued_at, started_at, finished_at, stage_progress"
+    def _query():
+        return (
+            supabase.table("ingest_jobs")
+            .select(_ingest_jobs_select_columns())
+            .in_("status", list(_ACTIVE_DOC_STATUSES))
+            .gte("queued_at", cutoff)
+            .order("queued_at", desc=True)
+            .execute()
         )
-        .in_("status", list(_ACTIVE_DOC_STATUSES))
-        .gte("queued_at", cutoff)
-        .order("queued_at", desc=True)
-        .execute()
-    )
+
+    try:
+        jobs_resp = _query()
+    except Exception as exc:  # noqa: BLE001
+        if _stage_progress_select_enabled and "stage_progress" in str(exc):
+            _disable_stage_progress_select(exc)
+            jobs_resp = _query()
+        else:
+            raise
     job_rows = jobs_resp.data or []
 
     # doc_id 별 latest job (queued_at desc 정렬이라 첫 row 가 latest)
@@ -921,16 +962,24 @@ def batch_status(
         )
 
     supabase = get_supabase_client()
-    jobs_resp = (
-        supabase.table("ingest_jobs")
-        .select(
-            "id, doc_id, status, current_stage, attempts, error_msg, "
-            "queued_at, started_at, finished_at, stage_progress"
+
+    def _query():
+        return (
+            supabase.table("ingest_jobs")
+            .select(_ingest_jobs_select_columns())
+            .in_("doc_id", doc_ids)
+            .order("queued_at", desc=True)
+            .execute()
         )
-        .in_("doc_id", doc_ids)
-        .order("queued_at", desc=True)
-        .execute()
-    )
+
+    try:
+        jobs_resp = _query()
+    except Exception as exc:  # noqa: BLE001
+        if _stage_progress_select_enabled and "stage_progress" in str(exc):
+            _disable_stage_progress_select(exc)
+            jobs_resp = _query()
+        else:
+            raise
     rows = jobs_resp.data or []
 
     # 각 doc_id 의 첫 번째 row (queued_at 최대) 가 latest

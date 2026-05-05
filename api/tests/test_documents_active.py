@@ -122,6 +122,61 @@ class DocumentsActiveTest(unittest.TestCase):
         self.assertIn("ingest_jobs", table_names)
 
 
+class StageProgressSelectGracefulTest(unittest.TestCase):
+    """W25 D14 — 마이그레이션 010 미적용 환경에서 SELECT 첫 실패 시 컬럼 빼고 재시도 + 이후 호출 자동 미포함."""
+
+    def setUp(self) -> None:
+        from app.routers.documents import reset_stage_progress_select_enabled
+
+        reset_stage_progress_select_enabled()
+
+    def test_first_query_failure_disables_column_and_retries(self) -> None:
+        """첫 SELECT 실패 (column does not exist) → flag set + 컬럼 빼고 재시도."""
+        from app.routers import documents as docs_module
+
+        # 첫 호출은 stage_progress APIError, 두 번째 호출은 빈 응답 성공
+        client = MagicMock()
+        empty_resp = MagicMock(); empty_resp.data = []
+        api_err = RuntimeError(
+            "{'message': 'column ingest_jobs.stage_progress does not exist', 'code': '42703'}"
+        )
+        chain = (
+            client.table.return_value
+            .select.return_value
+            .in_.return_value
+            .gte.return_value
+            .order.return_value
+        )
+        chain.execute.side_effect = [api_err, empty_resp]
+
+        with patch.object(docs_module, "get_supabase_client", return_value=client):
+            resp = docs_module.list_active_documents(hours=24)
+
+        self.assertEqual(resp.items, [])
+        # 첫 호출 (stage_progress 포함) + 재시도 (컬럼 미포함) = execute 2회
+        self.assertEqual(chain.execute.call_count, 2)
+        # flag 비활성됨
+        self.assertFalse(docs_module._stage_progress_select_enabled)
+
+    def test_subsequent_calls_skip_stage_progress_column(self) -> None:
+        """flag 비활성 후 호출은 첫 시도부터 stage_progress 미포함 → execute 1회."""
+        from app.routers import documents as docs_module
+
+        # 사전에 flag 비활성
+        docs_module._stage_progress_select_enabled = False
+
+        client = MagicMock()
+        empty_resp = MagicMock(); empty_resp.data = []
+        client.table.return_value.select.return_value.in_.return_value.gte.return_value.order.return_value.execute.return_value = empty_resp
+
+        with patch.object(docs_module, "get_supabase_client", return_value=client):
+            resp = docs_module.list_active_documents(hours=24)
+        self.assertEqual(resp.items, [])
+        # SELECT 호출 인자에 stage_progress 미포함
+        select_arg = client.table.return_value.select.call_args.args[0]
+        self.assertNotIn("stage_progress", select_arg)
+
+
 class DocumentsActiveHoursValidationTest(unittest.TestCase):
     """fastapi Query 검증 — hours 파라미터 범위 (1~168) 는 라우트 진입 전 422.
 
