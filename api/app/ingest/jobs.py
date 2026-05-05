@@ -80,6 +80,30 @@ def update_stage(job_id: str, *, stage: str) -> None:
     )
 
 
+# W25 D14 — stage_progress UPDATE 첫 실패 시 이번 프로세스 동안 비활성.
+# 마이그레이션 010 미적용 환경에서 매 페이지마다 41회 fail UPDATE 가 Supabase
+# connection pool 점유 + 백엔드 worker 부하 → 다른 endpoint 응답 분 단위 지연
+# 사고 방지. 마이그레이션 적용 후 백엔드 재시작 시 자동 재활성.
+_stage_progress_disabled = False
+
+
+def _disable_stage_progress(reason: Exception) -> None:
+    global _stage_progress_disabled
+    if not _stage_progress_disabled:
+        _stage_progress_disabled = True
+        logger.warning(
+            "stage_progress UPDATE 첫 실패 — 이번 프로세스 동안 비활성 "
+            "(마이그레이션 010 적용 후 백엔드 재시작 시 회복): %s",
+            reason,
+        )
+
+
+def reset_stage_progress_disabled() -> None:
+    """단위 테스트 용 — 모듈 flag 리셋."""
+    global _stage_progress_disabled
+    _stage_progress_disabled = False
+
+
 def update_stage_progress(
     job_id: str,
     *,
@@ -92,8 +116,11 @@ def update_stage_progress(
     {current, total, unit} JSONB 로 ingest_jobs.stage_progress 에 저장.
     Realtime publication 가 자동으로 web 에 push → StageProgress + indicator 실시간 갱신.
 
-    실패 시 graceful skip (마이그레이션 010 미적용 환경 대응) — 임베딩 파이프라인 무영향.
+    실패 시 첫 1회만 fail UPDATE 시도 후 모듈 flag 비활성. 이후 호출은 early return —
+    마이그레이션 010 미적용 환경에서도 임베딩 파이프라인 무영향 + 백엔드 부하 0.
     """
+    if _stage_progress_disabled:
+        return
     try:
         client = get_supabase_client()
         (
@@ -111,11 +138,13 @@ def update_stage_progress(
             .execute()
         )
     except Exception as exc:  # noqa: BLE001 — 진행 표시는 best-effort
-        logger.debug("stage_progress update skip (graceful): %s", exc)
+        _disable_stage_progress(exc)
 
 
 def clear_stage_progress(job_id: str) -> None:
     """stage 종료 시 stage_progress 를 NULL 로 리셋 (다음 stage 가 sub-progress 안 쓸 수 있음)."""
+    if _stage_progress_disabled:
+        return
     try:
         client = get_supabase_client()
         (
@@ -125,7 +154,7 @@ def clear_stage_progress(job_id: str) -> None:
             .execute()
         )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("clear_stage_progress skip (graceful): %s", exc)
+        _disable_stage_progress(exc)
 
 
 def finish_job(job_id: str) -> None:
