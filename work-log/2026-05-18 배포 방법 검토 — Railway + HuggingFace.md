@@ -1014,7 +1014,26 @@ cd api && uv sync --frozen && cd ..
 cd web && pnpm install && cd ..
 ```
 
-### 17.2 secret 복원 (1Password / Bitwarden 같은 곳에서)
+### 17.2 secret 복원 — 로컬 작업할 때만 필요
+
+**중요**: Railway / Vercel / Supabase dashboard 에 ENV 가 이미 모두 등록되어 있다. **production 만 쓸 거면 `.env` 복원 불필요**. 다른 컴퓨터에서 production live URL 그대로 접속해서 쓰면 됨.
+
+#### 17.2.1 `.env` 복원이 필요한 경우 vs 불필요한 경우
+
+| 작업 | `.env` 필요? | 이유 |
+|---|---|---|
+| 브라우저에서 production 사용 (https://jetrag.vercel.app/) | ❌ | dashboard ENV 만으로 충분 |
+| Claude Code 가 코드 편집 + git push (push 후 자동 rebuild) | ❌ | git 만 있으면 됨 |
+| Claude Code 가 production smoke (`curl` 외부 URL) | ❌ | 외부 URL 호출 |
+| `cd api && uvicorn` 로컬 backend dev 실행 | ✅ | `SUPABASE_*` / `GEMINI_API_KEY` 등 필요 |
+| `cd web && pnpm dev` 로컬 frontend dev 실행 | ✅ | `NEXT_PUBLIC_SUPABASE_*` 필요 |
+| `unittest discover` 단위 테스트 (DB 의존) | ⚠️ 일부 | Supabase 연결 테스트는 `.env` 필요 |
+| W-0 결정성 시험 재실행 | ✅ | `DEEPINFRA_API_TOKEN` 필요 |
+| v1.5 W-1 어댑터 swap (senior-developer 위임) | ✅ | DeepInfra 어댑터 로컬 테스트 시 |
+
+→ **v1.5 W-1 / 멀티유저 작업하려면 `.env` 복원 필요. production 만 쓸 거면 skip OK.**
+
+#### 17.2.2 secret 복원 절차 (필요한 경우만)
 
 본 컴퓨터에 있는 다음 2개 파일을 비밀 저장소 (1Password Secure Note 등) 에 미리 옮겨두고, 다른 컴퓨터에서 그대로 복원:
 
@@ -1028,38 +1047,48 @@ cp <secret-store>/jetrag-api.env   <repo>/.env
 cp <secret-store>/jetrag-web.env   <repo>/web/.env
 ```
 
-`.env` 안 값 (참조용, 다른 컴퓨터에서 같은 값 그대로):
+`.env` 안 값:
 - `SUPABASE_URL` / `SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_STORAGE_BUCKET`
 - `GEMINI_API_KEY` / `HF_API_TOKEN` / `DEEPINFRA_API_TOKEN`
 - `DEFAULT_USER_ID`
 - (선택) `JETRAG_DAILY_BUDGET_USD` / `JETRAG_CORS_ORIGINS` / `PORT`
 
 `web/.env` 안 값:
-- `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` (로컬 dev)
+- `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` (로컬 dev 시) **또는** `https://jet-rag-production.up.railway.app` (로컬 web → production backend 시)
 - `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
-**※ production 의 Railway / Vercel 은 이미 dashboard 에 ENV 등록되어 있어 다른 컴퓨터에서 추가 작업 불필요. .env 는 로컬 dev 용도만.**
+### 17.3 검증 (다른 컴퓨터에서)
 
-### 17.3 5분 안 검증 (다른 컴퓨터에서)
+#### 17.3.1 production 만 쓸 거면 (1분, `.env` 불필요)
 
 ```bash
 # 1. HEAD 확인
 git log --oneline -1
-# 기대: 6361894 docs(work-log): 2026-05-19 §16 ...
+# 기대: 8dda813 docs(work-log): 2026-05-19 §17 ...
 
-# 2. 단위 테스트 회귀
+# 2. production smoke
+curl -I https://jet-rag-production.up.railway.app/health
+curl -I https://jetrag.vercel.app/
+# 기대: 양쪽 HTTP/2 200
+```
+
+#### 17.3.2 로컬 dev 도 할 거면 (5분, `.env` 필요)
+
+```bash
+# 1. HEAD + 단위 테스트
+git log --oneline -1
 cd api && uv run python -m unittest discover 2>&1 | tail -5
 # 기대: Ran 1206 tests, failures=3 (기존 flaky)
 cd ..
 
-# 3. backend smoke (로컬)
+# 2. backend smoke (로컬)
 cd api && uv run uvicorn app.main:app --port 8000 &
 sleep 5
 curl http://localhost:8000/health
 # 기대: {"status":"ok",...}
 kill %1; cd ..
 
-# 4. production smoke (외부)
+# 3. production smoke (외부)
 curl -I https://jet-rag-production.up.railway.app/health
 curl -I https://jetrag.vercel.app/
 # 기대: 양쪽 HTTP/2 200
