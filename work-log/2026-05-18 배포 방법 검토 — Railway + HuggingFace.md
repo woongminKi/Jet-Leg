@@ -904,3 +904,79 @@ uv run python -m unittest discover 2>&1 | tail -5
 1. **monorepo 가 양쪽 PaaS 의 함정** — Vercel·Railway 둘 다 Root Directory 명시 안 하면 자동 감지가 잘못된 디렉토리 (또는 둘 다) 를 build → 실패. 두 서비스 모두 dashboard 에서 명시.
 2. **W-0 결정성 시험이 ROI 매우 높음** — 1시간 작업으로 chunks 37k 재인제스트 ($0.185 + 수 시간) 회피 결정 + 옵션 A fallback ($24/월) 회피 결정 둘 다 확정.
 3. **결제는 사용자만, 코드는 Claude** — 명확한 권한 분리가 작업 속도 ↑. 사용자가 결제까지 미리 마치면 코드 commit·push → 즉시 자동 rebuild.
+
+---
+
+## 16. W-7 canary 완료 — DECISION-13 등록 (2026-05-19 신규)
+
+### 16.1 진행 결과
+
+**production URL 양쪽 200 OK 도달**:
+
+- Frontend: https://jetrag.vercel.app/ → 홈 화면 정상 렌더 (검색 input, 최근 추가 5건, 인기 태그 8개, 내 문서 현황)
+- Backend: https://jet-rag-production.up.railway.app/ → `/health` `/docs` 200, CORS preflight `access-control-allow-origin: https://jetrag.vercel.app` 반영, Singapore edge `asia-southeast1-eqsg3a` 확정
+- 통신: 브라우저에서 stats / documents / popular_tags API 호출 정상 — 4일 전 인제스트한 5건 (SK·삼성전자·arXiv·게이지/중력 이중성 등) 그대로 표시
+
+### 16.2 실제로 만난 트러블슈팅 (15.4 추가분)
+
+#### 16.2.1 Vercel 이 잘못된 commit `ab26db5` (Initial commit) 만 배포
+
+- **원인 1**: "Skip deployments when there are no changes to root directory" Enabled → web/ 외 변경은 무시
+- **원인 2**: Vercel 이 `woongminKi/jetrag` (별도 private repo, 다른 컴퓨터에서 대문자·하이픈 안 된다 잘못 듣고 새로 만든 것) 에 연결되어 있었음 — 본 작업 repo `woongminKi/Jet-Rag` 와 별개
+- **해결**:
+  1. Skip 설정 Disabled
+  2. `jetrag` repo 연결 해제
+  3. Vercel GitHub App 의 repository access 를 `Jet-Rag` 에 부여 (initially "All repositories" 권한 부족)
+  4. `Jet-Rag` 재연결 + 빈 commit push 로 webhook 강제 trigger (`1a8e062`, `117a98d`)
+
+#### 16.2.2 새 deployment 가 모두 HTTP 401
+
+- **원인**: Vercel Deployment Protection "Standard Protection" Enabled — `vercel.app` preview/production 모두 Vercel SSO 강제
+- **해결**: Settings → Deployment Protection → "Require Log In" Off (포트폴리오라 public 노출 OK, Q9 답변 후 재검토)
+
+#### 16.2.3 모든 route 가 404 (정적 asset 만 200)
+
+- **증거**: `/next.svg` = 200 (web/public/ 정적), `/_next/static/chunks/main.js` = 404 (Next.js 빌드 산출물)
+- **원인**: Framework Preset = **"Other"** → Vercel 이 `.next/` build 산출물 무시, `web/public/` 만 static serve
+- **해결**: Framework Preset = "Next.js" 변경 + Save + 수동 Redeploy (Use existing Build Cache 체크 해제)
+
+#### 16.2.4 frontend 가 backend URL 을 `/jet-rag-production.up.railway.app/...` 로 path 화
+
+- **증거**: 브라우저 console `GET https://jetrag.vercel.app/jet-rag-production.up.railway.app/documents/active` → 404
+- **원인**: Vercel `NEXT_PUBLIC_API_BASE_URL` 값에 `https://` scheme 빠짐 → `fetch(`${BASE_URL}${path}`)` 가 상대경로 해석
+- **해결**: ENV 값 정정 `https://jet-rag-production.up.railway.app` + Redeploy (NEXT_PUBLIC_* 은 빌드 시 inlining 이라 ENV 저장만으론 안 됨)
+
+#### 16.2.5 ENV 변경 후 자동 redeploy 안 됨
+
+- **원인**: Vercel 의 settings 변경은 webhook trigger 안 함 (git push 만 trigger)
+- **해결**: Deployments 페이지에서 수동 Redeploy 호출
+
+### 16.3 DECISION-13 — 배포 완료 확정
+
+> **배포 D 안 (Railway $5 backend + Vercel Hobby frontend + DeepInfra embedding) production 도달 — 2026-05-19**
+
+- **선정 근거**: §1~§6 비교 분석 + 사용자 결정 D 안 (2026-05-18) → §15.6 9 step W-1~W-7 ship → §16 canary 200 OK 확정
+- **현 상태**:
+  - 비용: Railway $5/월 + Vercel $0 + DeepInfra ~$0 (token 미사용 — v1.5 W-1 진입 시 측정 시작)
+  - SLO: KPI #10 (P95 ≤ 2.5s) production 측정 대기 (Q1 도메인 + 실 유저 트래픽 필요)
+  - Multi-user: 현 `DEFAULT_USER_ID` 단일 유저 가정 — 멀티유저 D1~D3 (Q9 답변 후) 다음 단계
+- **사이드 이펙트**:
+  - Vercel 이 production scheme 강제 (`https://`) — backend URL 등록 시 scheme 누락 금지 (실 사례 16.2.4)
+  - Railway Singapore edge → Supabase Seoul cross-region latency 0 측정 (~30ms 1-way) 가정, 실측 v1.5 ship 후 KPI #10 측정 시 검증
+  - 두 repo 가 GitHub 에 남아있음 (`woongminKi/jetrag` 미사용, `woongminKi/Jet-Rag` master) — 정리 권장 (Q1 답변 후 도메인 부착 시 같이)
+
+### 16.4 다음 단계 (W-7 ship 이후)
+
+1. **v1.5 W-1 진입** — DeepInfra 어댑터 swap (senior-developer 위임, 2~3h) → R@10 회귀 0 검증 → ship
+2. **멀티유저 D1·D2·D3** — Q9 답변 후 진입 (Auth Supabase + RLS audit + per-user cap)
+3. **Q1 도메인 부착** — 무료 도메인 (Cloudflare / Freenom) 으로 시작 → Vercel custom domain
+4. **KPI #10 production 측정** — Q10 답변 후 1차 베타 5~10명 진입 시 측정 시작
+
+### 16.5 commit / 산출물
+
+| commit | 내용 |
+|---|---|
+| `e57c3ec` | Dockerfile + DeepInfra W-0 + Vercel CORS env (전 세션) |
+| `1a8e062` | reconnect 후 webhook 빈 commit trigger 1 |
+| `117a98d` | reconnect 후 webhook 빈 commit trigger 2 |
+| 본 commit | §16 추가 + DECISION-13 등록 |
