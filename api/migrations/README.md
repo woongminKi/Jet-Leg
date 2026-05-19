@@ -13,6 +13,14 @@ Supabase SQL Editor에서 순서대로 실행.
 | 006 | `006_search_metrics_log.sql` | W15 Day 2 — `search_metrics_log` 테이블 + mode/fallback 인덱스 + RLS. 검색 호출 1건당 row 1건 (한계 #61·#76·#81 회수 준비). |
 | 007 | `007_metrics_trend_rpc.sql` | W16 Day 1 — 추세 분석 RPC 2개 (`get_search_metrics_trend(range, mode)` + `get_vision_usage_trend(range)`). epoch floor 기반 24h/7d/30d 시간 버킷 + zero-fill (generate_series). SECURITY DEFINER + service_role GRANT. frontend 시계열 그래프 (W16 Day 3) 의 데이터 소스. |
 | 008 | `008_search_mode_split_rpc.sql` | W20 Day 1 — `search_dense_only(query_dense, k_rrf, top_k, user_id_arg)` + `search_sparse_only(query_text, k_rrf, top_k, user_id_arg)` 신규. 기존 `search_hybrid_rrf` 와 schema 100% 동일 (chunk_id·doc_id·rrf_score·dense_rank·sparse_rank). 진정 ablation 측정 — 응용 layer 필터링 제거 (한계 #74 회수). backward compat — search_hybrid_rrf / search_sparse_only_pgroonga 유지. |
+| 009 | `009_realtime_ingest_jobs.sql` | W25 D14 — `ingest_jobs.stage` + Supabase Realtime publication 등록. frontend 인제스트 글로벌 progress indicator 의 push 채널. |
+| 010 | `010_ingest_jobs_stage_progress.sql` | W25 D14 — `ingest_jobs.stage_progress JSONB` 추가. vision_enrich 페이지 단위 실시간 (현재 페이지 / 총 페이지) 진행 표시. |
+| 011 | `011_answer_feedback.sql` | W25 D14 — `answer_feedback` 테이블 + RLS. `/ask` 답변 후 사용자 👍/👎 + 메모 수집. |
+| 012 | `012_answer_ragas_evals.sql` | W25 D14 — `answer_ragas_evals` 테이블 + cache. Faithfulness + AnswerRelevancy + ContextPrecision (BGE-M3 cosine 휴리스틱) 정량 평가 영속. |
+| ~~013~~ | ~~reserve~~ | **번호 skip — 014 로 jump. 실제 파일 없음, 실행 순서·idempotency 영향 0.** |
+| 014 | `014_vision_usage_log_enhanced.sql` | Phase 1 S0 D1 (2026-05-06) — `vision_usage_log` 컬럼 확장 (doc_id/page/prompt/output/thinking 토큰/estimated_cost/retry_attempt). ADD COLUMN IF NOT EXISTS, 호출 코드 회귀 0. |
+| 015 | `015_vision_page_cache.sql` | Phase 1 S0 — Vision API 페이지 캐시 (doc_id+page → caption JSONB). reingest 비용 절감. |
+| 016 | `016_embed_query_cache.sql` | W4-Q-3 후속 — embed query 영구 캐시 (sha256(NFC(strip(text))), model_id) → 1024-dim 벡터. eval 재현성 + HF cold-start 부수 완화. W-1 (DeepInfra swap) 시점에 model_id 통일로 HF↔DeepInfra entry 공유 안전. |
 
 ## 실행 절차
 
